@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>مدقق النصوص العربية</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Kufi+Arabic:wght@400;600;700&display=swap');
+        
+        body {
+            font-family: 'Noto Kufi Arabic', sans-serif;
+        }
+        
+        .gradient-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        
+        .card-shadow {
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+        }
+        
+        .upload-zone {
+            border: 3px dashed #cbd5e1;
+            transition: all 0.3s ease;
+        }
+        
+        .upload-zone:hover, .upload-zone.dragover {
+            border-color: #667eea;
+            background-color: #f0f4ff;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            transition: all 0.3s ease;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+        
+        .segment-card {
+            transition: all 0.3s ease;
+        }
+        
+        .segment-card:hover {
+            transform: translateX(-5px);
+        }
+    </style>
+</head>
+<body class="gradient-bg min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <!-- Header -->
+        <div class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-white mb-2">📝 مدقق النصوص العربية</h1>
+            <p class="text-white text-opacity-90">ارفع ملف JSON وسنقوم بتصحيح الأخطاء الإملائية تلقائياً</p>
+        </div>
+        
+        <!-- Main Card -->
+        <div class="max-w-2xl mx-auto bg-white rounded-2xl card-shadow p-8">
+            <!-- Upload Zone -->
+            <div id="uploadZone" class="upload-zone rounded-xl p-12 text-center cursor-pointer">
+                <div class="text-6xl mb-4">📄</div>
+                <h3 class="text-xl font-semibold text-gray-700 mb-2">اسحب الملف هنا أو انقر للرفع</h3>
+                <p class="text-gray-500 mb-4">يدعم جميع الصيغ النصية والتوثيقية</p>
+                
+                <!-- Supported Formats -->
+                <div class="flex flex-wrap justify-center gap-2 mb-4">
+                    <span class="bg-blue-100 text-blue-800 text-xs px-3 py-1 rounded-full">📄 JSON</span>
+                    <span class="bg-green-100 text-green-800 text-xs px-3 py-1 rounded-full">📝 TXT</span>
+                    <span class="bg-purple-100 text-purple-800 text-xs px-3 py-1 rounded-full">🎬 SRT</span>
+                    <span class="bg-red-100 text-red-800 text-xs px-3 py-1 rounded-full">📕 PDF</span>
+                    <span class="bg-orange-100 text-orange-800 text-xs px-3 py-1 rounded-full">📘 DOCX</span>
+                    <span class="bg-cyan-100 text-cyan-800 text-xs px-3 py-1 rounded-full">🎞️ VTT</span>
+                </div>
+                
+                <input type="file" id="fileInput" accept=".json,.txt,.srt,.pdf,.docx,.vtt" class="hidden">
+                <button class="btn-primary text-white px-6 py-3 rounded-lg font-semibold">
+                    اختر ملف
+                </button>
+            </div>
+            
+            <!-- Loading -->
+            <div id="loading" class="hidden text-center py-8">
+                <div class="animate-spin w-12 h-12 border-4 border-purple-500 border-t-transparent rounded-full mx-auto mb-4"></div>
+                <p class="text-gray-600">جاري تحليل الملف...</p>
+            </div>
+            
+            <!-- Preview Section -->
+            <div id="previewSection" class="hidden">
+                <div class="border-t pt-6 mt-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-xl font-semibold text-gray-800">📋 معاينة الملف</h3>
+                        <span id="fileInfo" class="text-sm text-gray-500"></span>
+                    </div>
+                    
+                    <!-- Stats -->
+                    <div class="grid grid-cols-3 gap-4 mb-6">
+                        <div class="bg-blue-50 rounded-lg p-4 text-center">
+                            <div id="totalSegments" class="text-3xl font-bold text-blue-600">0</div>
+                            <div class="text-sm text-gray-600">إجمالي المقاطع</div>
+                        </div>
+                        <div class="bg-green-50 rounded-lg p-4 text-center">
+                            <div id="textSegments" class="text-3xl font-bold text-green-600">0</div>
+                            <div class="text-sm text-gray-600">مقاطع بنصوص</div>
+                        </div>
+                        <div class="bg-purple-50 rounded-lg p-4 text-center">
+                            <div id="langCode" class="text-3xl font-bold text-purple-600">-</div>
+                            <div class="text-sm text-gray-600">اللغة</div>
+                        </div>
+                    </div>
+                    
+                    <!-- Segments Preview -->
+                    <div id="segmentsPreview" class="space-y-3 max-h-64 overflow-y-auto mb-6"></div>
+                    
+                    <!-- Action Buttons -->
+                    <div class="flex gap-4">
+                        <button id="correctBtn" class="flex-1 btn-primary text-white py-3 rounded-lg font-semibold">
+                            ✨ تصحيح النصوص
+                        </button>
+                        <button id="cancelBtn" class="px-6 py-3 bg-gray-200 text-gray-700 rounded-lg font-semibold hover:bg-gray-300">
+                            إلغاء
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Progress Section -->
+            <div id="progressSection" class="hidden">
+                <div class="border-t pt-6 mt-6">
+                    <h3 class="text-xl font-semibold text-gray-800 mb-4">⚙️ جاري التصحيح...</h3>
+                    <div class="bg-gray-200 rounded-full h-4 mb-4">
+                        <div id="progressBar" class="btn-primary h-4 rounded-full transition-all duration-500" style="width: 0%"></div>
+                    </div>
+                    <p id="progressText" class="text-center text-gray-600"></p>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Footer -->
+        <div class="text-center mt-8 text-white text-opacity-70">
+            <p>Medkik Arabic Text Spelling Corrector v1.0</p>
+        </div>
+    </div>
+
+    <script>
+        const uploadZone = document.getElementById('uploadZone');
+        const fileInput = document.getElementById('fileInput');
+        const loading = document.getElementById('loading');
+        const previewSection = document.getElementById('previewSection');
+        const progressSection = document.getElementById('progressSection');
+        
+        let currentJobId = null;
+        
+        // Click to upload
+        uploadZone.addEventListener('click', () => fileInput.click());
+        
+        // Drag and drop
+        uploadZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadZone.classList.add('dragover');
+        });
+        
+        uploadZone.addEventListener('dragleave', () => {
+            uploadZone.classList.remove('dragover');
+        });
+        
+        uploadZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadZone.classList.remove('dragover');
+            const file = e.dataTransfer.files[0];
+            if (file) uploadFile(file);
+        });
+        
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files[0]) uploadFile(e.target.files[0]);
+        });
+        
+        async function uploadFile(file) {
+            loading.classList.remove('hidden');
+            uploadZone.classList.add('hidden');
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (result.error) {
+                    alert('خطأ: ' + result.error);
+                    resetUI();
+                    return;
+                }
+                
+                currentJobId = result.job_id;
+                showPreview(result);
+                
+            } catch (error) {
+                alert('خطأ في رفع الملف: ' + error.message);
+                resetUI();
+            }
+        }
+        
+        function showPreview(data) {
+            loading.classList.add('hidden');
+            previewSection.classList.remove('hidden');
+            
+            document.getElementById('fileInfo').textContent = data.filename;
+            document.getElementById('totalSegments').textContent = data.total_segments;
+            document.getElementById('textSegments').textContent = data.segments_with_text;
+            document.getElementById('langCode').textContent = data.data?.language || 'ar-SA';
+            
+            const preview = document.getElementById('segmentsPreview');
+            preview.innerHTML = '';
+            
+            data.preview.forEach((seg, i) => {
+                const text = seg.text_original || '(فارغ)';
+                const hasText = text.trim() !== '';
+                
+                preview.innerHTML += `
+                    <div class="segment-card bg-gray-50 rounded-lg p-3 ${hasText ? 'border-r-4 border-blue-500' : 'border-r-4 border-gray-300'}">
+                        <div class="flex items-start gap-3">
+                            <span class="bg-blue-100 text-blue-800 text-xs font-semibold px-2 py-1 rounded">${seg.id}</span>
+                            <p class="text-gray-700 flex-1">${text}</p>
+                        </div>
+                        ${seg.speaker ? `<span class="text-xs text-gray-500 mr-8">${seg.speaker}</span>` : ''}
+                    </div>
+                `;
+            });
+            
+            if (data.total_segments > 5) {
+                preview.innerHTML += `
+                    <p class="text-center text-gray-500 text-sm py-2">
+                        ... و ${data.total_segments - 5} مقطع آخر
+                    </p>
+                `;
+            }
+        }
+        
+        document.getElementById('correctBtn').addEventListener('click', startCorrection);
+        document.getElementById('cancelBtn').addEventListener('click', resetUI);
+        
+        async function startCorrection() {
+            previewSection.classList.add('hidden');
+            progressSection.classList.remove('hidden');
+            
+            const progressBar = document.getElementById('progressBar');
+            const progressText = document.getElementById('progressText');
+            
+            progressBar.style.width = '5%';
+            progressText.textContent = 'جاري بدء التصحيح...';
+            
+            // Use SSE for real-time progress
+            const eventSource = new EventSource(`/progress/${currentJobId}`);
+            
+            eventSource.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                
+                if (data.error) {
+                    eventSource.close();
+                    alert('❌ خطأ: ' + data.error);
+                    resetUI();
+                    return;
+                }
+                
+                if (data.done) {
+                    eventSource.close();
+                    progressBar.style.width = '100%';
+                    progressBar.style.background = 'linear-gradient(135deg, #10b981 0%, #059669 100%)';
+                    progressText.textContent = `✅ تم التصحيح! ${data.corrected} مقطع في ${data.duration} ثانية`;
+                    
+                    setTimeout(() => {
+                        window.location.href = `/results/${currentJobId}`;
+                    }, 1500);
+                    return;
+                }
+                
+                // Update progress
+                const percent = Math.round((data.current / data.total) * 100);
+                progressBar.style.width = percent + '%';
+                progressText.textContent = `${data.message} (${percent}%) - متبقي ~${data.remaining}ث`;
+            };
+            
+            eventSource.onerror = function(event) {
+                eventSource.close();
+                alert('❌ خطأ في الاتصال بالخادم');
+                resetUI();
+            };
+        }
+        
+        function resetUI() {
+            uploadZone.classList.remove('hidden');
+            loading.classList.add('hidden');
+            previewSection.classList.add('hidden');
+            progressSection.classList.add('hidden');
+            fileInput.value = '';
+            currentJobId = null;
+        }
+    </script>
+</body>
+</html>

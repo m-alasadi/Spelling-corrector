@@ -1,0 +1,89 @@
+{
+  "job_id": "real-test-001",
+  "source_file": "lecture_arabic.mp4",
+  "language": "ar-SA",
+  "engine": "x-seedasr-2.0",
+  "duration_ms": 1800000,
+  "segments": [
+    {
+      "id": 1,
+      "start_ms": 0,
+      "end_ms": 8500,
+      "speaker": "د. محمد",
+      "text_original": "بسم الله الرحمن الرحيم والصلاة والسلام على رسول الله اما بعد",
+      "text_corrected": null
+    },
+    {
+      "id": 2,
+      "start_ms": 8500,
+      "end_ms": 18000,
+      "speaker": "د. محمد",
+      "text_original": "اليوم راح نتكلم عن مشروع مهم جدا ونحتاج ان نكون دقيقين في كل التفاصيل",
+      "text_corrected": null
+    },
+    {
+      "id": 3,
+      "start_ms": 18000,
+      "end_ms": 28000,
+      "speaker": "د. محمد",
+      "text_original": "اول شي لازم نعرف ان هالمشروع يحتاج الى تخطيط جيد ومدروس",
+      "text_corrected": null
+    },
+    {
+      "id": 4,
+      "start_ms": 28000,
+      "end_ms": 40000,
+      "speaker": null,
+      "text_original": "فيه اكثر من مية شخص شغالين على هالمشروع وكمان في ناس جدد بتقدر تنضم لنا",
+      "text_corrected": null
+    },
+    {
+      "id": 5,
+      "start_ms": 40000,
+      "end_ms": 52000,
+      "speaker": "د. محمد",
+      "text_original": "احنا في المرحلة الاولى ونقدر نقول ان الامور ماشية بشكل حلو",
+      "text_corrected": null
+    },
+    {
+      "id": 6,
+      "start_ms": 52000,
+      "end_ms": 65000,
+      "speaker": "أ. سعيد",
+      "text_original": "عندي سؤال هل المشروع هذا له علاقة بالمشروع اللي قبله",
+      "text_corrected": null
+    },
+    {
+      "id": 7,
+      "start_ms": 65000,
+      "end_ms": 78000,
+      "speaker": "د. محمد",
+      "text_original": "لا مو له علاقة直接 بس فيه شبه كبير في الافكار",
+      "text_corrected": null
+    },
+    {
+      "id": 8,
+      "start_ms": 78000,
+      "end_ms": 92000,
+      "speaker": "د. محمد",
+      "text_original": "لازم ناخد بالاعتبار ان التكاليف مرتفعة شوي所以我们需要",
+      "text_corrected": null
+    },
+    {
+      "id": 9,
+      "start_ms": 92000,
+      "end_ms": 105000,
+      "speaker": null,
+      "text_original": "طيب والحل نقدر نحل المشكلة اذا شغلنا عليها كلنا",
+      "text_corrected": null
+    },
+    {
+      "id": 10,
+      "start_ms": 105000,
+      "end_ms": 120000,
+      "speaker": "د. محمد",
+      "text_original": "ان شاء الله راح نكمل باذن الله ونقدم شي يفيد الجميع",
+      "text_corrected": null
+    }
+  ]
+}

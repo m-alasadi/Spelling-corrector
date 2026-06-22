@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>نتائج التصحيح</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Kufi+Arabic:wght@400;600;700&display=swap');
+        
+        body {
+            font-family: 'Noto Kufi Arabic', sans-serif;
+        }
+        
+        .gradient-bg {
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+        }
+        
+        .card-shadow {
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+            transition: all 0.3s ease;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(17, 153, 142, 0.4);
+        }
+        
+        .diff-added {
+            background-color: #dcfce7;
+            color: #166534;
+        }
+        
+        .diff-removed {
+            background-color: #fee2e2;
+            color: #991b1b;
+            text-decoration: line-through;
+        }
+        
+        .segment-card {
+            transition: all 0.3s ease;
+        }
+        
+        .segment-card:hover {
+            transform: translateX(-5px);
+        }
+    </style>
+</head>
+<body class="gradient-bg min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <!-- Header -->
+        <div class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-white mb-2">✅ نتائج التصحيح</h1>
+            <p class="text-white text-opacity-90">{{ filename }} - تم تصحيح {{ corrected_count }} مقطع</p>
+        </div>
+        
+        <!-- Main Card -->
+        <div class="max-w-4xl mx-auto bg-white rounded-2xl card-shadow p-8">
+            <!-- Stats Bar -->
+            <div class="flex items-center justify-between mb-6 pb-4 border-b">
+                <div class="flex items-center gap-4">
+                    <span class="bg-green-100 text-green-800 px-4 py-2 rounded-full font-semibold">
+                        ✅ تم التصحيح
+                    </span>
+                    <span class="text-gray-500">اللغة: {{ data.language }}</span>
+                </div>
+                <a href="/download/{{ job_id }}" class="btn-primary text-white px-6 py-2 rounded-lg font-semibold">
+                    📥 تحميل الملف المصحح
+                </a>
+            </div>
+            
+            <!-- Segments List -->
+            <div class="space-y-4">
+                {% for segment in data.segments %}
+                <div class="segment-card bg-gray-50 rounded-xl p-4 border-r-4 {% if segment.text_corrected and segment.text_corrected != segment.text_original %}border-green-500{% else %}border-gray-300{% endif %}">
+                    <div class="flex items-start gap-3">
+                        <!-- Segment ID -->
+                        <span class="bg-blue-100 text-blue-800 text-sm font-bold px-3 py-1 rounded-lg">
+                            {{ segment.id }}
+                        </span>
+                        
+                        <div class="flex-1">
+                            <!-- Speaker -->
+                            {% if segment.speaker %}
+                            <span class="text-xs text-gray-500 mb-1 block">{{ segment.speaker }}</span>
+                            {% endif %}
+                            
+                            <!-- Original Text -->
+                            <div class="mb-2">
+                                <span class="text-xs text-red-500 font-semibold">الأصلي:</span>
+                                <p class="text-gray-600 {% if segment.text_corrected != segment.text_original %}diff-removed{% endif %} px-2 py-1 rounded">
+                                    {{ segment.text_original or '(فارغ)' }}
+                                </p>
+                            </div>
+                            
+                            <!-- Corrected Text -->
+                            <div>
+                                <span class="text-xs text-green-500 font-semibold">المصحح:</span>
+                                <p class="text-gray-800 font-medium {% if segment.text_corrected != segment.text_original %}diff-added{% endif %} px-2 py-1 rounded">
+                                    {{ segment.text_corrected or segment.text_original or '(فارغ)' }}
+                                </p>
+                            </div>
+                        </div>
+                        
+                        <!-- Status Icon -->
+                        <div class="text-2xl">
+                            {% if segment.text_corrected and segment.text_corrected != segment.text_original %}
+                                <span title="تم التصحيح">✅</span>
+                            {% elif segment.text_corrected %}
+                                <span title="بدون تغيير">➖</span>
+                            {% else %}
+                                <span title="فارغ">⬜</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            
+            <!-- Summary -->
+            <div class="mt-8 pt-6 border-t">
+                <div class="grid grid-cols-4 gap-4 text-center">
+                    <div class="bg-gray-50 rounded-lg p-4">
+                        <div class="text-2xl font-bold text-gray-800">{{ data.segments|length }}</div>
+                        <div class="text-sm text-gray-500">إجمالي المقاطع</div>
+                    </div>
+                    <div class="bg-green-50 rounded-lg p-4">
+                        <div class="text-2xl font-bold text-green-600">{{ corrected_count }}</div>
+                        <div class="text-sm text-gray-500">تم تصحيحها</div>
+                    </div>
+                    <div class="bg-blue-50 rounded-lg p-4">
+                        <div class="text-2xl font-bold text-blue-600">{{ data.segments|length - corrected_count }}</div>
+                        <div class="text-sm text-gray-500">بدون تغيير</div>
+                    </div>
+                    <div class="bg-purple-50 rounded-lg p-4">
+                        <div class="text-2xl font-bold text-purple-600">{{ data.job_id[:8] }}</div>
+                        <div class="text-sm text-gray-500">رقم المهمة</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Actions -->
+            <div class="mt-8 flex gap-4 justify-center">
+                <a href="/" class="px-8 py-3 bg-gray-200 text-gray-700 rounded-lg font-semibold hover:bg-gray-300">
+                    📄 رفع ملف جديد
+                </a>
+                <a href="/download/{{ job_id }}" class="btn-primary text-white px-8 py-3 rounded-lg font-semibold">
+                    📥 تحميل النتيجة
+                </a>
+            </div>
+        </div>
+        
+        <!-- Footer -->
+        <div class="text-center mt-8 text-white text-opacity-70">
+            <p>Medkik Arabic Text Spelling Corrector v1.0</p>
+        </div>
+    </div>
+</body>
+</html>
