@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>محرر التصحيح التفاعلي</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Kufi+Arabic:wght@400;600;700&family=Noto+Naskh+Arabic:wght@400;600;700&display=swap');
+        
+        :root {
+            --error-color: #ef4444;
+            --suggestion-color: #2563eb;
+            --accepted-color: #22c55e;
+            --ignored-color: #9ca3af;
+        }
+        
+        body {
+            font-family: 'Noto Naskh Arabic', 'Noto Kufi Arabic', sans-serif;
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
+            min-height: 100vh;
+        }
+        
+        .doc-container {
+            background: #fefefe;
+            border-radius: 8px;
+            box-shadow: 0 4px 60px rgba(0,0,0,0.3);
+            line-height: 2.2;
+            font-size: 18px;
+            color: #1a1a1a;
+            padding: 48px 56px;
+            position: relative;
+        }
+        
+        .doc-container::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 4px;
+            height: 100%;
+            background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
+            border-radius: 8px 0 0 8px;
+        }
+        
+        /* Red wavy underline for misspelled words */
+        .misspelled-word {
+            position: relative;
+            cursor: pointer;
+            text-decoration-line: underline;
+            text-decoration-style: wavy;
+            text-decoration-color: var(--error-color);
+            text-underline-offset: 4px;
+            text-decoration-thickness: 2px;
+            border-radius: 3px;
+            transition: all 0.15s ease;
+            padding: 1px 3px;
+            margin: 0 1px;
+        }
+        
+        .misspelled-word:hover {
+            background-color: rgba(239, 68, 68, 0.08);
+        }
+        
+        .misspelled-word.active {
+            background-color: rgba(239, 68, 68, 0.15);
+        }
+        
+        /* Accepted word - green background */
+        .accepted-word {
+            background-color: rgba(34, 197, 94, 0.15);
+            text-decoration-line: none;
+            border-radius: 3px;
+            padding: 1px 3px;
+            margin: 0 1px;
+            transition: all 0.3s ease;
+        }
+        
+        /* Ignored word - no highlight */
+        .ignored-word {
+            text-decoration-line: none;
+            border-radius: 3px;
+            padding: 1px 3px;
+            margin: 0 1px;
+        }
+        
+        /* Correction popup */
+        .correction-popup {
+            position: fixed;
+            z-index: 1000;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 8px 40px rgba(0,0,0,0.2), 0 0 0 1px rgba(0,0,0,0.05);
+            padding: 16px;
+            min-width: 280px;
+            max-width: 400px;
+            direction: rtl;
+            animation: popupFadeIn 0.15s ease;
+        }
+        
+        @keyframes popupFadeIn {
+            from { opacity: 0; transform: translateY(4px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .correction-popup .error-word {
+            color: var(--error-color);
+            font-weight: 700;
+            text-decoration: line-through;
+            font-size: 16px;
+        }
+        
+        .correction-popup .suggested-word {
+            color: var(--suggestion-color);
+            font-weight: 700;
+            font-size: 18px;
+        }
+        
+        .correction-popup .arrow {
+            position: absolute;
+            bottom: -8px;
+            right: 24px;
+            width: 16px;
+            height: 16px;
+            background: white;
+            transform: rotate(45deg);
+            box-shadow: 4px 4px 8px rgba(0,0,0,0.1);
+        }
+        
+        .btn-accept {
+            background: linear-gradient(135deg, #22c55e, #16a34a);
+            color: white;
+            border: none;
+            padding: 8px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            font-family: 'Noto Kufi Arabic', sans-serif;
+            transition: all 0.2s ease;
+        }
+        
+        .btn-accept:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(34, 197, 94, 0.4);
+        }
+        
+        .btn-ignore {
+            background: #f3f4f6;
+            color: #6b7280;
+            border: 1px solid #e5e7eb;
+            padding: 8px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            font-family: 'Noto Kufi Arabic', sans-serif;
+            transition: all 0.2s ease;
+        }
+        
+        .btn-ignore:hover {
+            background: #e5e7eb;
+        }
+        
+        /* Segment separator */
+        .segment-block {
+            margin-bottom: 16px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid #f0f0f0;
+            position: relative;
+        }
+        
+        .segment-block:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+        }
+        
+        .segment-id {
+            position: absolute;
+            left: -8px;
+            top: 0;
+            background: #e0e7ff;
+            color: #4338ca;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 2px 8px;
+            border-radius: 0 6px 6px 0;
+            font-family: 'Noto Kufi Arabic', sans-serif;
+        }
+        
+        .segment-speaker {
+            font-size: 12px;
+            color: #9ca3af;
+            margin-bottom: 4px;
+            font-family: 'Noto Kufi Arabic', sans-serif;
+        }
+        
+        /* Stats bar */
+        .stats-bar {
+            backdrop-filter: blur(10px);
+            background: rgba(255,255,255,0.95);
+            border-radius: 16px;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.1);
+        }
+        
+        /* Toolbar */
+        .toolbar-btn {
+            transition: all 0.2s ease;
+        }
+        
+        .toolbar-btn:hover {
+            transform: translateY(-1px);
+        }
+        
+        /* Overlay backdrop */
+        .popup-backdrop {
+            position: fixed;
+            inset: 0;
+            z-index: 999;
+        }
+        
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: #c1c1c1;
+            border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: #a1a1a1;
+        }
+
+        /* Toast notification */
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: #1e293b;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 12px;
+            font-size: 14px;
+            font-family: 'Noto Kufi Arabic', sans-serif;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+            z-index: 2000;
+            opacity: 0;
+            transition: all 0.3s ease;
+        }
+        
+        .toast.show {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+    </style>
+</head>
+<body class="min-h-screen">
+    <!-- Header -->
+    <div class="sticky top-0 z-50 bg-slate-900/95 backdrop-blur-sm border-b border-slate-700">
+        <div class="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
+            <div class="flex items-center gap-4">
+                <a href="/" class="text-slate-400 hover:text-white transition-colors">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
+                    </svg>
+                </a>
+                <div>
+                    <h1 class="text-white font-bold text-lg">✏️ محرر التصحيح</h1>
+                    <p class="text-slate-400 text-sm">{{ filename }}</p>
+                </div>
+            </div>
+            
+            <!-- Stats -->
+            <div class="flex items-center gap-4">
+                <div id="errorBadge" class="flex items-center gap-2 bg-red-500/20 text-red-400 px-4 py-2 rounded-full text-sm font-semibold">
+                    <span class="w-2 h-2 bg-red-400 rounded-full animate-pulse"></span>
+                    <span id="errorCount">{{ total_errors }}</span> أخطاء
+                </div>
+                
+                <div class="flex items-center gap-2 bg-green-500/20 text-green-400 px-4 py-2 rounded-full text-sm font-semibold">
+                    ✅ <span id="correctedCount">{{ corrected_count }}</span> تصحيح
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Toolbar -->
+    <div class="sticky top-[73px] z-40 bg-slate-800/95 backdrop-blur-sm border-b border-slate-700">
+        <div class="max-w-5xl mx-auto px-6 py-3 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <button id="acceptAllBtn" class="toolbar-btn bg-green-600 hover:bg-green-500 text-white px-5 py-2 rounded-lg text-sm font-semibold flex items-center gap-2">
+                    ✅ قبول الكل
+                </button>
+                <button id="ignoreAllBtn" class="toolbar-btn bg-slate-600 hover:bg-slate-500 text-white px-5 py-2 rounded-lg text-sm font-semibold flex items-center gap-2">
+                    👁️ تجاهل الكل
+                </button>
+                <div class="h-6 w-px bg-slate-600"></div>
+                <button id="jumpToNext" class="toolbar-btn bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2">
+                    ⬇️ الخطأ التالي
+                </button>
+            </div>
+            
+            <div class="flex items-center gap-3">
+                <a id="downloadBtn" href="/api/download-edited/{{ job_id }}" class="toolbar-btn bg-gradient-to-l from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white px-6 py-2 rounded-lg text-sm font-semibold flex items-center gap-2">
+                    📥 تحميل النتيجة
+                </a>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Main Content -->
+    <div class="max-w-5xl mx-auto px-6 py-10">
+        <!-- Legend -->
+        <div class="mb-6 flex items-center gap-6 text-sm text-slate-400">
+            <div class="flex items-center gap-2">
+                <span class="misspelled-word" style="font-size:14px; padding: 0 4px;">كلمة</span>
+                <span>= خطأ إملائي</span>
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="accepted-word" style="font-size:14px; padding: 0 4px;">كلمة</span>
+                <span>= تم قبول التصحيح</span>
+            </div>
+        </div>
+        
+        <!-- Document -->
+        <div class="doc-container" id="docContainer">
+            {% for segment in data.segments %}
+            {% set seg_idx = loop.index0 %}
+            <div class="segment-block" data-seg-index="{{ loop.index0 }}">
+                <span class="segment-id">{{ segment.id }}</span>
+                {% if segment.speaker %}
+                <div class="segment-speaker">🎤 {{ segment.speaker }}</div>
+                {% endif %}
+                <div class="segment-text">
+                    {% for token in segment.word_diffs %}
+                        {% if token.type == 'word' %}
+                            {% if token.is_error %}
+                                <span class="misspelled-word"
+                                      data-seg-index="{{ seg_idx }}"
+                                      data-word-index="{{ loop.index0 }}"
+                                      data-suggestion="{{ token.suggestion | e }}"
+                                      data-original="{{ token.value | e }}">{{ token.value }}</span>
+                            {% else %}
+                                <span>{{ token.value }}</span>
+                            {% endif %}
+                        {% else %}
+                            {{ token.value }}
+                        {% endif %}
+                    {% endfor %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    
+    <!-- Correction Popup (hidden by default) -->
+    <div id="correctionPopup" class="correction-popup" style="display: none;">
+        <div class="arrow"></div>
+        
+        <!-- Header -->
+        <div class="flex items-center gap-2 mb-3 pb-3 border-b border-gray-100">
+            <span class="text-sm text-gray-500">تصحيح مقترح</span>
+        </div>
+        
+        <!-- Word Comparison -->
+        <div class="flex items-center gap-4 mb-4">
+            <div class="flex-1 text-center">
+                <div class="text-xs text-gray-400 mb-1">الأصلي</div>
+                <span id="popupOriginal" class="error-word"></span>
+            </div>
+            <div class="text-gray-300">←</div>
+            <div class="flex-1 text-center">
+                <div class="text-xs text-gray-400 mb-1">التصحيح</div>
+                <span id="popupSuggestion" class="suggested-word"></span>
+            </div>
+        </div>
+        
+        <!-- Actions -->
+        <div class="flex gap-3">
+            <button id="popupAccept" class="btn-accept flex-1">
+                ✅ قبول التصحيح
+            </button>
+            <button id="popupIgnore" class="btn-ignore flex-1">
+                👁️ تجاهل
+            </button>
+        </div>
+    </div>
+    
+    <!-- Toast -->
+    <div id="toast" class="toast"></div>
+    
+    <script>
+    (function() {
+        const JOB_ID = '{{ job_id }}';
+        let currentPopup = null;
+        let activeWord = null;
+        let currentSegIndex = -1;
+        let currentWordIndex = -1;
+        
+        // ── Toast notifications ──
+        function showToast(message, type = 'success') {
+            const toast = document.getElementById('toast');
+            const colors = {
+                success: 'bg-green-600',
+                error: 'bg-red-600',
+                info: 'bg-blue-600'
+            };
+            toast.className = `toast ${colors[type] || colors.info}`;
+            toast.textContent = message;
+            toast.classList.add('show');
+            setTimeout(() => toast.classList.remove('show'), 2500);
+        }
+        
+        // ── Update error count display ──
+        function updateErrorCount(newCount) {
+            const el = document.getElementById('errorCount');
+            el.textContent = newCount;
+            const badge = document.getElementById('errorBadge');
+            if (newCount === 0) {
+                badge.className = 'flex items-center gap-2 bg-green-500/20 text-green-400 px-4 py-2 rounded-full text-sm font-semibold';
+                badge.innerHTML = '<span class="w-2 h-2 bg-green-400 rounded-full"></span> ✅ تم التصحيح!';
+            }
+        }
+        
+        // ── Close popup ──
+        function closePopup() {
+            const popup = document.getElementById('correctionPopup');
+            popup.style.display = 'none';
+            if (activeWord) {
+                activeWord.classList.remove('active');
+                activeWord = null;
+            }
+            currentSegIndex = -1;
+            currentWordIndex = -1;
+        }
+        
+        // ── Show popup near a word ──
+        function showPopup(wordEl) {
+            const popup = document.getElementById('correctionPopup');
+            const rect = wordEl.getBoundingClientRect();
+            
+            const original = wordEl.dataset.original;
+            const suggestion = wordEl.dataset.suggestion;
+            currentSegIndex = parseInt(wordEl.dataset.segIndex);
+            currentWordIndex = parseInt(wordEl.dataset.wordIndex);
+            
+            document.getElementById('popupOriginal').textContent = original;
+            document.getElementById('popupSuggestion').textContent = suggestion;
+            
+            // Position popup below the word
+            let top = rect.bottom + 8;
+            let left = rect.left + (rect.width / 2) - 140;
+            
+            // Keep popup in viewport
+            if (left < 16) left = 16;
+            if (left + 280 > window.innerWidth) left = window.innerWidth - 296;
+            if (top + 180 > window.innerHeight) {
+                top = rect.top - 180;
+            }
+            
+            popup.style.top = top + 'px';
+            popup.style.left = left + 'px';
+            popup.style.display = 'block';
+            
+            if (activeWord) activeWord.classList.remove('active');
+            activeWord = wordEl;
+            activeWord.classList.add('active');
+        }
+        
+        // ── Apply correction (accept or ignore) ──
+        async function applyCorrection(action) {
+            if (currentSegIndex < 0 || currentWordIndex < 0) return;
+            
+            try {
+                const response = await fetch(`/api/apply-correction/${JOB_ID}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        segment_index: currentSegIndex,
+                        word_index: currentWordIndex,
+                        action: action
+                    })
+                });
+                
+                const result = await response.json();
+                if (result.error) {
+                    showToast('خطأ: ' + result.error, 'error');
+                    return;
+                }
+                
+                // Update the word visually
+                if (activeWord) {
+                    if (action === 'accept') {
+                        activeWord.className = 'accepted-word';
+                        activeWord.textContent = activeWord.dataset.suggestion;
+                    } else {
+                        activeWord.className = 'ignored-word';
+                    }
+                    activeWord.removeAttribute('data-suggestion');
+                }
+                
+                // Update error count
+                updateErrorCount(result.total_errors);
+                
+                if (action === 'accept') {
+                    showToast('✅ تم قبول التصحيح');
+                } else {
+                    showToast('تم تجاهل التصحيح', 'info');
+                }
+                
+                closePopup();
+                
+            } catch (error) {
+                showToast('خطأ في الاتصال', 'error');
+            }
+        }
+        
+        // ── Event: Click on misspelled word ──
+        document.addEventListener('click', function(e) {
+            const wordEl = e.target.closest('.misspelled-word');
+            
+            if (wordEl) {
+                e.preventDefault();
+                e.stopPropagation();
+                
+                if (activeWord === wordEl && currentPopup !== null) {
+                    closePopup();
+                    return;
+                }
+                
+                showPopup(wordEl);
+                return;
+            }
+            
+            // Click outside popup → close
+            const popup = document.getElementById('correctionPopup');
+            if (!popup.contains(e.target)) {
+                closePopup();
+            }
+        });
+        
+        // ── Event: Accept button ──
+        document.getElementById('popupAccept').addEventListener('click', function(e) {
+            e.stopPropagation();
+            applyCorrection('accept');
+        });
+        
+        // ── Event: Ignore button ──
+        document.getElementById('popupIgnore').addEventListener('click', function(e) {
+            e.stopPropagation();
+            applyCorrection('ignore');
+        });
+        
+        // ── Event: Accept All ──
+        document.getElementById('acceptAllBtn').addEventListener('click', async function() {
+            if (!confirm('هل تريد قبول جميع التصحيحات؟')) return;
+            
+            try {
+                const response = await fetch(`/api/accept-all/${JOB_ID}`, { method: 'POST' });
+                const result = await response.json();
+                
+                if (result.success) {
+                    // Update all error words visually
+                    document.querySelectorAll('.misspelled-word').forEach(el => {
+                        el.className = 'accepted-word';
+                        el.textContent = el.dataset.suggestion || el.textContent;
+                    });
+                    updateErrorCount(0);
+                    closePopup();
+                    showToast('✅ تم قبول جميع التصحيحات');
+                }
+            } catch (error) {
+                showToast('خطأ في الاتصال', 'error');
+            }
+        });
+        
+        // ── Event: Ignore All ──
+        document.getElementById('ignoreAllBtn').addEventListener('click', async function() {
+            if (!confirm('هل تريد تجاهل جميع التصحيحات؟')) return;
+            
+            try {
+                const response = await fetch(`/api/ignore-all/${JOB_ID}`, { method: 'POST' });
+                const result = await response.json();
+                
+                if (result.success) {
+                    document.querySelectorAll('.misspelled-word').forEach(el => {
+                        el.className = 'ignored-word';
+                    });
+                    updateErrorCount(0);
+                    closePopup();
+                    showToast('تم تجاهل جميع التصحيحات', 'info');
+                }
+            } catch (error) {
+                showToast('خطأ في الاتصال', 'error');
+            }
+        });
+        
+        // ── Event: Jump to next error ──
+        document.getElementById('jumpToNext').addEventListener('click', function() {
+            const errors = document.querySelectorAll('.misspelled-word');
+            if (errors.length === 0) {
+                showToast('لا يوجد أخطاء متبقية!', 'info');
+                return;
+            }
+            
+            // Find the next error after current scroll position
+            const scrollY = window.scrollY;
+            let nextError = null;
+            
+            for (const err of errors) {
+                const rect = err.getBoundingClientRect();
+                if (rect.top + window.scrollY > scrollY + 100) {
+                    nextError = err;
+                    break;
+                }
+            }
+            
+            // If no next error found, wrap to first
+            if (!nextError) nextError = errors[0];
+            
+            nextError.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            
+            // Flash effect
+            nextError.style.transition = 'background-color 0.2s';
+            nextError.style.backgroundColor = 'rgba(239, 68, 68, 0.3)';
+            setTimeout(() => {
+                nextError.style.backgroundColor = '';
+            }, 800);
+        });
+        
+        // ── Event: Keyboard shortcuts ──
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                closePopup();
+            }
+            // Tab to jump to next error
+            if (e.key === 'Tab' && !e.shiftKey && document.getElementById('correctionPopup').style.display !== 'block') {
+                e.preventDefault();
+                document.getElementById('jumpToNext').click();
+            }
+        });
+        
+    })();
+    </script>
+</body>
+</html>

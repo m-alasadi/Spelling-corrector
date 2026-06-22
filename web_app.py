@@ -12,9 +12,11 @@ Then open: http://localhost:5000
 
 import json
 import os
+import re
 import sys
 import uuid
 import logging
+import difflib
 from pathlib import Path
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, send_file
@@ -41,6 +43,104 @@ Path(app.config['OUTPUT_FOLDER']).mkdir(exist_ok=True)
 
 # Store correction results temporarily
 correction_results = {}
+
+
+# ──────────────────────────────────────────────────────────────
+# Word-level diff utilities
+# ──────────────────────────────────────────────────────────────
+
+def tokenize_arabic_text(text):
+    """
+    Tokenize Arabic text into words and separators while preserving order.
+    Returns list of {type: 'word'|'space'|'punct', value: str}
+    """
+    tokens = []
+    # Match Arabic words, whitespace sequences, or punctuation/other chars
+    for match in re.finditer(r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]+|\s+|[^\s\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]+', text):
+        val = match.group()
+        if val.isspace():
+            tokens.append({'type': 'space', 'value': val})
+        elif re.match(r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]+', val):
+            tokens.append({'type': 'word', 'value': val})
+        else:
+            tokens.append({'type': 'punct', 'value': val})
+    return tokens
+
+
+def compute_word_diff(original, corrected):
+    """
+    Compare original and corrected text word-by-word.
+    Returns a list of token objects with correction info.
+    Each token: {type, value, is_error, suggestion}
+    """
+    if not original or not original.strip():
+        return [{'type': 'word', 'value': original or '', 'is_error': False, 'suggestion': None}]
+
+    orig_tokens = [t for t in tokenize_arabic_text(original) if t['type'] != 'space']
+    corr_tokens = [t for t in tokenize_arabic_text(corrected) if t['type'] != 'space']
+
+    # Use SequenceMatcher on word values
+    orig_words = [t['value'] for t in orig_tokens]
+    corr_words = [t['value'] for t in corr_tokens]
+
+    matcher = difflib.SequenceMatcher(None, orig_words, corr_words, autojunk=False)
+
+    # Build a map: orig_word_index -> correction info
+    corrections = {}
+    for op, i1, i2, j1, j2 in matcher.get_opcodes():
+        if op == 'equal':
+            for k in range(i1, i2):
+                corrections[k] = {'is_error': False, 'suggestion': None}
+        elif op == 'replace':
+            corr_text = ' '.join(corr_words[j1:j2])
+            for k in range(i1, i2):
+                corrections[k] = {'is_error': True, 'suggestion': corr_text}
+        elif op == 'delete':
+            for k in range(i1, i2):
+                corrections[k] = {'is_error': True, 'suggestion': ''}
+
+    # Reconstruct full token list with correction info
+    result = []
+    word_idx = 0
+    for token in tokenize_arabic_text(original):
+        if token['type'] == 'word':
+            corr = corrections.get(word_idx, {'is_error': False, 'suggestion': None})
+            result.append({
+                'type': 'word',
+                'value': token['value'],
+                'is_error': corr['is_error'],
+                'suggestion': corr['suggestion']
+            })
+            word_idx += 1
+        else:
+            result.append({
+                'type': token['type'],
+                'value': token['value'],
+                'is_error': False,
+                'suggestion': None
+            })
+
+    return result
+
+
+def compute_all_diffs(segments):
+    """
+    Compute word-level diffs for all segments.
+    Mutates segments in place, adding 'word_diffs' to each.
+    Returns total error count.
+    """
+    total_errors = 0
+    for seg in segments:
+        original = seg.get('text_original', '')
+        corrected = seg.get('text_corrected', original)
+        if original and corrected:
+            seg['word_diffs'] = compute_word_diff(original, corrected)
+            seg['error_count'] = sum(1 for t in seg['word_diffs'] if t.get('is_error'))
+            total_errors += seg['error_count']
+        else:
+            seg['word_diffs'] = [{'type': 'word', 'value': original or '', 'is_error': False, 'suggestion': None}]
+            seg['error_count'] = 0
+    return total_errors
 
 
 @app.route('/')
@@ -168,11 +268,17 @@ def correct_file(job_id):
         result['output_path'] = str(output_path)
         result['corrected_count'] = corrected_count
         
+        # Compute word-level diffs for the editor
+        total_errors = compute_all_diffs(segments)
+        result['total_errors'] = total_errors
+        
         return jsonify({
             'success': True,
             'corrected_count': corrected_count,
             'total_segments': len(segments),
-            'output_filename': output_filename
+            'output_filename': output_filename,
+            'total_errors': total_errors,
+            'editor_url': f'/editor/{job_id}'
         })
         
     except Exception as e:
@@ -324,10 +430,221 @@ def progress_stream(job_id):
         result['output_path'] = str(output_path)
         result['corrected_count'] = corrector.stats['corrected_segments']
         
+        # Compute word-level diffs for the editor
+        total_errors = compute_all_diffs(segments)
+        result['total_errors'] = total_errors
+        
         elapsed = time.time() - start_time
-        yield f"data: {json.dumps({'done': True, 'corrected': corrector.stats['corrected_segments'], 'duration': round(elapsed, 1), 'output_filename': output_filename})}\n\n"
+        yield f"data: {json.dumps({'done': True, 'corrected': corrector.stats['corrected_segments'], 'duration': round(elapsed, 1), 'output_filename': output_filename, 'total_errors': total_errors, 'editor_url': f'/editor/{job_id}'})}\n\n"
     
     return Response(generate(), mimetype='text/event-stream')
+
+
+# ──────────────────────────────────────────────────────────────
+# Editor routes
+# ──────────────────────────────────────────────────────────────
+
+@app.route('/editor/<job_id>')
+def editor(job_id):
+    """Interactive editor page with inline spell checking"""
+    if job_id not in correction_results:
+        return render_template('error.html', message='Job not found'), 404
+    
+    result = correction_results[job_id]
+    
+    if result['status'] != 'corrected':
+        return render_template('error.html', message='File not yet corrected'), 400
+    
+    data = result['data']
+    segments = data.get('segments', [])
+    
+    # Compute word-level diffs if not already done
+    if not any('word_diffs' in seg for seg in segments):
+        compute_all_diffs(segments)
+    
+    total_errors = sum(seg.get('error_count', 0) for seg in segments)
+    
+    return render_template('editor.html',
+                          job_id=job_id,
+                          data=data,
+                          filename=result['filename'],
+                          corrected_count=result.get('corrected_count', 0),
+                          total_errors=total_errors)
+
+
+@app.route('/api/apply-correction/<job_id>', methods=['POST'])
+def apply_correction(job_id):
+    """Apply a single word correction (accept or ignore)"""
+    if job_id not in correction_results:
+        return jsonify({'error': 'Job not found'}), 404
+    
+    try:
+        payload = request.get_json()
+        seg_index = payload.get('segment_index')
+        word_index = payload.get('word_index')
+        action = payload.get('action')  # 'accept' or 'ignore'
+        
+        result = correction_results[job_id]
+        segments = result['data'].get('segments', [])
+        
+        if seg_index >= len(segments):
+            return jsonify({'error': 'Invalid segment index'}), 400
+        
+        segment = segments[seg_index]
+        word_diffs = segment.get('word_diffs', [])
+        
+        if word_index >= len(word_diffs):
+            return jsonify({'error': 'Invalid word index'}), 400
+        
+        word = word_diffs[word_index]
+        
+        if action == 'accept':
+            # Replace the word in text_corrected
+            word['accepted'] = True
+            word['ignored'] = False
+        elif action == 'ignore':
+            word['accepted'] = False
+            word['ignored'] = True
+        else:
+            return jsonify({'error': 'Invalid action'}), 400
+        
+        # Recount errors
+        remaining = sum(1 for w in word_diffs if w.get('is_error') and not w.get('accepted') and not w.get('ignored'))
+        segment['error_count'] = remaining
+        
+        total_errors = sum(s.get('error_count', 0) for s in segments)
+        
+        return jsonify({
+            'success': True,
+            'remaining_errors': remaining,
+            'total_errors': total_errors
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/accept-all/<job_id>', methods=['POST'])
+def accept_all_corrections(job_id):
+    """Accept all remaining corrections"""
+    if job_id not in correction_results:
+        return jsonify({'error': 'Job not found'}), 404
+    
+    try:
+        result = correction_results[job_id]
+        segments = result['data'].get('segments', [])
+        
+        for seg in segments:
+            for word in seg.get('word_diffs', []):
+                if word.get('is_error'):
+                    word['accepted'] = True
+                    word['ignored'] = False
+            seg['error_count'] = 0
+        
+        # Update text_corrected to reflect accepted changes
+        for seg in segments:
+            diffs = seg.get('word_diffs', [])
+            if diffs:
+                new_text = ''
+                for w in diffs:
+                    if w.get('is_error') and w.get('accepted'):
+                        new_text += w.get('suggestion', w['value'])
+                    else:
+                        new_text += w['value']
+                seg['text_corrected'] = new_text
+        
+        return jsonify({'success': True, 'total_errors': 0})
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/ignore-all/<job_id>', methods=['POST'])
+def ignore_all_corrections(job_id):
+    """Ignore all remaining corrections"""
+    if job_id not in correction_results:
+        return jsonify({'error': 'Job not found'}), 404
+    
+    try:
+        result = correction_results[job_id]
+        segments = result['data'].get('segments', [])
+        
+        for seg in segments:
+            for word in seg.get('word_diffs', []):
+                if word.get('is_error'):
+                    word['accepted'] = False
+                    word['ignored'] = True
+            seg['error_count'] = 0
+        
+        return jsonify({'success': True, 'total_errors': 0})
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/download-edited/<job_id>')
+def download_edited(job_id):
+    """Download the final edited/corrected text"""
+    if job_id not in correction_results:
+        return jsonify({'error': 'Job not found'}), 404
+    
+    result = correction_results[job_id]
+    
+    if result['status'] != 'corrected':
+        return jsonify({'error': 'File not yet corrected'}), 400
+    
+    data = result['data']
+    segments = data.get('segments', [])
+    
+    # Build final text from word_diffs
+    final_segments = []
+    for seg in segments:
+        diffs = seg.get('word_diffs', [])
+        if diffs:
+            text = ''
+            for w in diffs:
+                if w.get('is_error') and w.get('accepted') and not w.get('ignored'):
+                    text += w.get('suggestion', w['value'])
+                else:
+                    text += w['value']
+            final_segments.append(text)
+        else:
+            final_segments.append(seg.get('text_corrected', seg.get('text_original', '')))
+    
+    # Build output based on original format
+    output_data = {
+        'job_id': data.get('job_id', job_id),
+        'source_file': data.get('source_file', ''),
+        'language': data.get('language', 'ar-SA'),
+        'engine': data.get('engine', ''),
+        'segments': []
+    }
+    
+    for i, seg in enumerate(segments):
+        seg_data = {
+            'id': seg.get('id', i + 1),
+            'text_original': seg.get('text_original', ''),
+            'text_corrected': final_segments[i] if i < len(final_segments) else seg.get('text_corrected', '')
+        }
+        if seg.get('speaker'):
+            seg_data['speaker'] = seg['speaker']
+        if seg.get('start'):
+            seg_data['start'] = seg['start']
+        if seg.get('end'):
+            seg_data['end'] = seg['end']
+        output_data['segments'].append(seg_data)
+    
+    output_filename = f"final_{result['filename']}"
+    output_path = Path(app.config['OUTPUT_FOLDER']) / f"{job_id}_{output_filename}"
+    
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(output_data, f, ensure_ascii=False, indent=2)
+    
+    return send_file(
+        output_path,
+        as_attachment=True,
+        download_name=output_filename
+    )
 
 
 @app.route('/health')
@@ -346,4 +663,4 @@ if __name__ == '__main__':
     print("Press Ctrl+C to stop")
     print("=" * 50)
     
-    app.run(debug=True, port=5000, host='0.0.0.0')
+    app.run(debug=False, port=5000, host='0.0.0.0')

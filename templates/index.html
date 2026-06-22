@@ -273,11 +273,12 @@
                     eventSource.close();
                     progressBar.style.width = '100%';
                     progressBar.style.background = 'linear-gradient(135deg, #10b981 0%, #059669 100%)';
-                    progressText.textContent = `✅ تم التصحيح! ${data.corrected} مقطع في ${data.duration} ثانية`;
+                    progressText.textContent = `✅ تم التصحيح! ${data.corrected} مقطع في ${data.duration} ثانية - ${data.total_errors || 0} أخطاء`;
                     
+                    // Redirect to interactive editor instead of static results
                     setTimeout(() => {
-                        window.location.href = `/results/${currentJobId}`;
-                    }, 1500);
+                        window.location.href = data.editor_url || `/editor/${currentJobId}`;
+                    }, 1200);
                     return;
                 }
                 
