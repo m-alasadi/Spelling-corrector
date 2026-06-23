@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>محرر التصحيح — {{ filename }}</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Naskh+Arabic:wght@400;500;600;700&family=Noto+Kufi+Arabic:wght@400;500;600;700&display=swap');
+        :root{--bg:#f5f5f7;--surface:#fff;--border:#e5e7eb;--text:#1f2937;--sec:#6b7280;--pri:#2563eb;--err:#dc2626;--err-bg:#fef2f2;--ok:#16a34a;--ok-bg:#f0fdf4;--r:8px}
+        *{box-sizing:border-box;margin:0;padding:0}
+        body{font-family:'Noto Kufi Arabic',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+        
+        /* ── Ribbon ── */
+        .ribbon{background:var(--surface);border-bottom:1px solid var(--border);box-shadow:0 1px 3px rgba(0,0,0,.06);position:sticky;top:0;z-index:100}
+        .ribbon-top{display:flex;align-items:center;justify-content:space-between;padding:10px 24px;border-bottom:1px solid #f3f4f6}
+        .ribbon-top .left{display:flex;align-items:center;gap:16px}
+        .back{color:var(--sec);text-decoration:none;font-size:14px;display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:6px;transition:.15s}
+        .back:hover{background:#f3f4f6;color:var(--text)}
+        .ribbon-top h1{font-size:16px;font-weight:600}
+        .ribbon-top .file{font-size:12px;color:var(--sec)}
+        .badges{display:flex;align-items:center;gap:12px}
+        .badge{display:flex;align-items:center;gap:6px;padding:4px 12px;border-radius:16px;font-size:13px;font-weight:500}
+        .badge-err{background:var(--err-bg);color:var(--err)}
+        .badge-ok{background:var(--ok-bg);color:var(--ok)}
+        .pulse{width:8px;height:8px;border-radius:50%;animation:blink 1.5s infinite}
+        .pulse.r{background:var(--err)}.pulse.g{background:var(--ok);animation:none}
+        @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+        
+        .ribbon-bar{display:flex;align-items:center;gap:6px;padding:8px 24px;flex-wrap:wrap}
+        .rsep{width:1px;height:24px;background:#e5e7eb;margin:0 6px}
+        
+        /* ── Buttons ── */
+        .btn{display:inline-flex;align-items:center;gap:5px;padding:6px 14px;border-radius:6px;border:1px solid var(--border);font-size:13px;font-weight:500;cursor:pointer;font-family:inherit;transition:.12s;background:var(--surface);color:var(--text)}
+        .btn:hover{background:#f9fafb;border-color:#d1d5db}.btn:active{transform:scale(.98)}
+        .btn-p{background:var(--pri);color:#fff;border-color:var(--pri)}.btn-p:hover{background:#1d4ed8}
+        .btn-g{background:var(--ok);color:#fff;border-color:var(--ok)}.btn-g:hover{background:#15803d}
+        .btn-s{padding:5px 10px;font-size:12px}
+        
+        /* ── Status Bar ── */
+        .status-bar{position:sticky;bottom:0;z-index:100;background:var(--surface);border-top:1px solid var(--border);padding:6px 24px;display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--sec)}
+        .status-bar kbd{display:inline-block;padding:1px 5px;font-size:11px;background:#f3f4f6;border:1px solid #d1d5db;border-radius:3px;font-family:monospace}
+        
+        /* ── Document ── */
+        .canvas{max-width:900px;margin:28px auto;padding:0 24px 72px}
+        .paper{background:var(--surface);border-radius:var(--r);box-shadow:0 4px 24px rgba(0,0,0,.08);overflow:hidden}
+        .paper-head{padding:16px 28px;border-bottom:1px solid #f3f4f6;display:flex;align-items:center;justify-content:space-between}
+        .paper-head h2{font-size:15px;font-weight:600}
+        .paper-body{padding:28px 36px;font-family:'Noto Naskh Arabic',Georgia,serif;font-size:17px;line-height:2.1;color:#374151;min-height:300px}
+        
+        /* ── Segments ── */
+        .seg{margin-bottom:2px;padding:10px 14px;border-radius:6px;border-right:3px solid transparent;transition:background .12s;position:relative}
+        .seg:hover{background:#f9fafb}
+        .seg.he{border-right-color:var(--err)}.seg.hd{border-right-color:var(--ok)}
+        .seg-num{position:absolute;left:-6px;top:10px;background:#e0e7ff;color:#4338ca;font-size:10px;font-weight:700;padding:2px 6px;border-radius:0 4px 4px 0;font-family:'Noto Kufi Arabic';min-width:18px;text-align:center}
+        .seg.hd .seg-num{background:#dcfce7;color:#166534}
+        .seg-sp{font-size:11px;color:var(--sec);margin-bottom:4px;font-family:'Noto Kufi Arabic';display:flex;align-items:center;gap:4px}
+        .seg-sp .dot{width:4px;height:4px;border-radius:50%;background:var(--pri)}
+        
+        /* ── Words ── */
+        .w{border-radius:3px;padding:1px 2px;transition:.12s}
+        .w-err{text-decoration:underline wavy var(--err);text-decoration-skip-ink:none;text-underline-offset:3px;text-decoration-thickness:1.5px;cursor:pointer}
+        .w-err:hover{background:var(--err-bg)}
+        .w-err.on{background:var(--err-bg);box-shadow:0 0 0 2px #fca5a5}
+        .w-ok{background:var(--ok-bg);color:var(--ok);font-weight:500}
+        .w-ign{color:var(--sec)}
+        
+        /* ── Popup ── */
+        .popup-bg{position:fixed;inset:0;z-index:998}
+        .popup{position:fixed;z-index:999;background:var(--surface);border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.15),0 0 0 1px rgba(0,0,0,.05);width:340px;overflow:hidden;animation:popIn .12s ease}
+        @keyframes popIn{from{opacity:0;transform:translateY(4px) scale(.98)}to{opacity:1;transform:none}}
+        .popup-hd{padding:12px 16px;background:#fafafa;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+        .popup-hd .t{font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px}
+        .popup-hd .x{width:24px;height:24px;border-radius:6px;border:none;background:transparent;cursor:pointer;font-size:16px;color:var(--sec);display:flex;align-items:center;justify-content:center}
+        .popup-hd .x:hover{background:#e5e7eb}
+        .popup-bd{padding:16px}
+        .popup-cmp{display:grid;grid-template-columns:1fr auto 1fr;gap:12px;align-items:center;margin-bottom:16px}
+        .popup-cmp .c{text-align:center}
+        .popup-cmp .lb{font-size:11px;color:var(--sec);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px}
+        .popup-cmp .old{font-family:'Noto Naskh Arabic';font-size:18px;font-weight:600;color:var(--err);text-decoration:line-through;opacity:.7}
+        .popup-cmp .ar{color:#d1d5db;font-size:18px}
+        .popup-cmp .new{font-family:'Noto Naskh Arabic';font-size:20px;font-weight:700;color:var(--pri)}
+        .popup-act{display:flex;gap:8px}
+        .popup-act .btn{flex:1;justify-content:center;padding:10px;font-weight:600}
+        
+        /* ── Toast ── */
+        .toast{position:fixed;bottom:48px;left:50%;z-index:2000;transform:translateX(-50%) translateY(60px);background:#1f2937;color:#fff;padding:10px 20px;border-radius:8px;font-size:13px;font-weight:500;box-shadow:0 8px 30px rgba(0,0,0,.12);opacity:0;transition:.3s;display:flex;align-items:center;gap:8px}
+        .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+        .toast.ok{background:var(--ok)}.toast.info{background:var(--pri)}
+        ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#d1d5db;border-radius:3px}
+    </style>
+</head>
+<body>
+    <!-- Ribbon -->
+    <div class="ribbon">
+        <div class="ribbon-top">
+            <div class="left">
+                <a href="/" class="back"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>الرئيسية</a>
+                <div><h1>📝 محرر التصحيح</h1><div class="file">{{ filename }}</div></div>
+            </div>
+            <div class="badges">
+                <div class="badge badge-err"><span class="pulse r" id="errDot"></span><strong id="errCount">{{ total_errors }}</strong> أخطاء</div>
+                <div class="badge badge-ok">✅ <strong id="okCount">{{ corrected_count }}</strong> تصحيح</div>
+            </div>
+        </div>
+        <div class="ribbon-bar">
+            <button class="btn btn-g btn-s" onclick="acceptAll()">✅ قبول الكل</button>
+            <button class="btn btn-s" onclick="ignoreAll()">👁️ تجاهل الكل</button>
+            <div class="rsep"></div>
+            <button class="btn btn-p btn-s" onclick="jumpNext()" title="Tab">⬇️ التالي <kbd>Tab</kbd></button>
+            <button class="btn btn-s" onclick="jumpPrev()" title="Shift+Tab">⬆️ السابق</button>
+            <div class="rsep"></div>
+            <button class="btn btn-s" onclick="clearIgnored()">🔄 إعادة تعيين</button>
+            <div style="flex:1"></div>
+            <a href="/api/download/{{ job_id }}" class="btn btn-s" style="text-decoration:none">📥 تحميل</a>
+        </div>
+    </div>
+    
+    <!-- Document -->
+    <div class="canvas">
+        <div class="paper">
+            <div class="paper-head">
+                <h2>📄 النص المصحح</h2>
+                <span style="font-size:12px;color:var(--sec)" id="pLabel">—</span>
+            </div>
+            <div class="paper-body" id="doc"></div>
+        </div>
+    </div>
+    
+    <!-- Status Bar -->
+    <div class="status-bar">
+        <div><span id="sInfo">—</span> · <span id="wInfo">—</span></div>
+        <div><kbd>Tab</kbd> التالي · <kbd>Esc</kbd> إغلاق · <kbd>Enter</kbd> قبول</div>
+    </div>
+    
+    <!-- Popup -->
+    <div id="popBg" class="popup-bg" style="display:none" onclick="closePop()"></div>
+    <div id="pop" class="popup" style="display:none">
+        <div class="popup-hd"><div class="t">💡 تصحيح مقترح</div><button class="x" onclick="closePop()">✕</button></div>
+        <div class="popup-bd">
+            <div class="popup-cmp">
+                <div class="c"><div class="lb">الأصلي</div><div class="old" id="pO"></div></div>
+                <div class="ar">←</div>
+                <div class="c"><div class="lb">التصحيح</div><div class="new" id="pN"></div></div>
+            </div>
+            <div class="popup-act">
+                <button class="btn btn-g" onclick="fix('accept')">✅ قبول</button>
+                <button class="btn" onclick="fix('ignore')">👁️ تجاهل</button>
+            </div>
+        </div>
+    </div>
+    
+    <div id="toast" class="toast"></div>
+
+<script>
+const JOB='{{ job_id }}';
+const SEG={{ data.segments | tojson }};
+let cur=null,actEl=null;
+
+/* ── Render ── */
+function render(){
+    const d=document.getElementById('doc');d.innerHTML='';
+    let te=0,tk=0;
+    SEG.forEach((s,si)=>{
+        const div=document.createElement('div');
+        div.className='seg';div.dataset.si=si;
+        const df=s.word_diffs||[];
+        const ec=df.filter(w=>w.is_error&&!w.accepted&&!w.ignored&&!w.merged).length;
+        const oc=df.filter(w=>w.is_error&&(w.accepted||w.ignored)).length;
+        te+=ec;tk+=oc;
+        if(ec===0&&oc>0)div.classList.add('hd');
+        else if(ec>0)div.classList.add('he');
+        
+        const nm=document.createElement('span');nm.className='seg-num';nm.textContent=s.id;div.appendChild(nm);
+        
+        if(s.speaker){const sp=document.createElement('div');sp.className='seg-sp';sp.innerHTML='<span class="dot"></span> '+s.speaker;div.appendChild(sp);}
+        
+        const tx=document.createElement('div');
+        df.forEach((w,wi)=>{
+            if(w.type==='word'){
+                // Skip merged words (consumed by previous word's correction)
+                if(w.merged) return;
+                
+                const sp=document.createElement('span');
+                sp.dataset.si=si;sp.dataset.wi=wi;
+                if(w.is_error&&!w.accepted&&!w.ignored){sp.className='w w-err';sp.textContent=w.value;sp.title='اقتراح: '+w.suggestion;}
+                else if(w.accepted){sp.className='w w-ok';sp.textContent=w.suggestion||w.value;}
+                else if(w.ignored){sp.className='w w-ign';sp.textContent=w.value;}
+                else{sp.className='w';sp.textContent=w.value;}
+                tx.appendChild(sp);
+            }else{tx.appendChild(document.createTextNode(w.value));}
+        });
+        div.appendChild(tx);d.appendChild(div);
+    });
+    
+    document.getElementById('errCount').textContent=te;
+    document.getElementById('errDot').className='pulse '+(te===0?'g':'r');
+    document.getElementById('sInfo').textContent=SEG.length+' مقاطع';
+    document.getElementById('wInfo').textContent=SEG.reduce((a,s)=>a+(s.word_diffs||[]).filter(w=>w.type==='word').length,0)+' كلمة';
+    document.getElementById('pLabel').textContent=te===0?'✅ تم التصحيح بالكامل':te+' أخطاء متبقية';
+    return te;
+}
+
+/* ── Popup ── */
+function showPop(el){
+    const si=+el.dataset.si,wi=+el.dataset.wi;
+    const w=SEG[si].word_diffs[wi];if(!w||!w.is_error)return;
+    cur={si,wi,el};
+    document.getElementById('pO').textContent=w.value;
+    document.getElementById('pN').textContent=w.suggestion||'(—)';
+    const r=el.getBoundingClientRect(),p=document.getElementById('pop'),bg=document.getElementById('popBg');
+    let t=r.bottom+8,l=r.left+r.width/2-170;
+    if(l<16)l=16;if(l+340>innerWidth)l=innerWidth-356;if(t+200>innerHeight)t=r.top-200;
+    p.style.top=t+'px';p.style.left=l+'px';p.style.display='block';bg.style.display='block';
+    if(actEl)actEl.classList.remove('on');el.classList.add('on');
+}
+function closePop(){document.getElementById('pop').style.display='none';document.getElementById('popBg').style.display='none';if(actEl){actEl.classList.remove('on');actEl=null;}cur=null;}
+
+/* ── Fix ── */
+async function fix(act){
+    if(!cur)return;const{si,wi}=cur;const w=SEG[si].word_diffs[wi];
+    if(act==='accept'){w.accepted=true;w.ignored=false;}else{w.accepted=false;w.ignored=true;}
+    try{await fetch('/api/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:JOB,segment_index:si,word_index:wi,action:act})});}catch(e){}
+    closePop();render();toast(act==='accept'?'✅ تم قبول التصحيح':'تم تجاهل التصحيح',act==='accept'?'ok':'info');
+}
+
+/* ── Accept/Ignore All ── */
+async function acceptAll(){
+    if(!confirm('قبول جميع التصحيحات؟'))return;
+    SEG.forEach(s=>(s.word_diffs||[]).forEach(w=>{if(w.is_error&&!w.accepted&&!w.ignored)w.accepted=true;}));
+    try{await fetch('/api/accept-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:JOB})});}catch(e){}
+    closePop();render();toast('✅ تم قبول الكل','ok');
+}
+async function ignoreAll(){
+    if(!confirm('تجاهل جميع التصحيحات؟'))return;
+    SEG.forEach(s=>(s.word_diffs||[]).forEach(w=>{if(w.is_error&&!w.accepted&&!w.ignored)w.ignored=true;}));
+    try{await fetch('/api/ignore-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:JOB})});}catch(e){}
+    closePop();render();toast('تم تجاهل الكل','info');
+}
+function clearIgnored(){SEG.forEach(s=>(s.word_diffs||[]).forEach(w=>{if(w.ignored)w.ignored=false;}));render();toast('تم إعادة التعيين','info');}
+
+/* ── Navigation ── */
+function errs(){return Array.from(document.querySelectorAll('.w-err'));}
+function jumpNext(){const e=errs();if(!e.length){toast('🎉 لا أخطاء متبقية!','ok');return;}const sy=scrollY;let n=e.find(x=>x.getBoundingClientRect().top+sy>sy+80);if(!n)n=e[0];n.scrollIntoView({behavior:'smooth',block:'center'});closePop();setTimeout(()=>showPop(n),200);}
+function jumpPrev(){const e=errs();if(!e.length){toast('🎉 لا أخطاء متبقية!','ok');return;}const sy=scrollY;let p=null;for(let i=e.length-1;i>=0;i--){if(e[i].getBoundingClientRect().top+sy<sy+80){p=e[i];break;}}if(!p)p=e[e.length-1];p.scrollIntoView({behavior:'smooth',block:'center'});closePop();setTimeout(()=>showPop(p),200);}
+
+/* ── Events ── */
+document.addEventListener('click',e=>{const w=e.target.closest('.w-err');if(w){e.preventDefault();if(actEl===w&&cur){closePop();return;}showPop(w);return;}if(!document.getElementById('pop').contains(e.target))closePop();});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){closePop();return;}if(e.key==='Tab'&&!e.shiftKey&&!cur){e.preventDefault();jumpNext();}if(e.key==='Tab'&&e.shiftKey&&!cur){e.preventDefault();jumpPrev();}if(cur){if(e.key==='Enter'){e.preventDefault();fix('accept');}if(e.key==='Delete'||e.key==='Backspace'){e.preventDefault();fix('ignore');}}});
+
+/* ── Toast ── */
+function toast(m,c=''){const t=document.getElementById('toast');t.textContent=m;t.className='toast show '+c;setTimeout(()=>t.className='toast',2200);}
+
+/* ── Init ── */
+render();
+</script>
+</body>
+</html>

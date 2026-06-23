@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>مدقق النصوص العربية — FastAPI</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Kufi+Arabic:wght@400;600;700&display=swap');
+        *{box-sizing:border-box;margin:0;padding:0}
+        body{font-family:'Noto Kufi Arabic',sans-serif;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+        .card{background:#fff;border-radius:20px;box-shadow:0 20px 60px rgba(0,0,0,.15);width:100%;max-width:640px;padding:48px 40px}
+        h1{text-align:center;font-size:28px;margin-bottom:8px}
+        .subtitle{text-align:center;color:#6b7280;margin-bottom:32px}
+        .upload-zone{border:3px dashed #cbd5e1;border-radius:16px;padding:48px 24px;text-align:center;cursor:pointer;transition:.2s}
+        .upload-zone:hover,.upload-zone.dragover{border-color:#667eea;background:#f0f4ff}
+        .upload-zone .icon{font-size:48px;margin-bottom:12px}
+        .formats{display:flex;flex-wrap:wrap;justify-content:center;gap:8px;margin:16px 0}
+        .formats span{background:#f1f5f9;color:#475569;padding:4px 12px;border-radius:20px;font-size:13px}
+        input[type=file]{display:none}
+        .btn{display:inline-block;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;border:none;padding:14px 32px;border-radius:12px;font-size:16px;font-weight:600;cursor:pointer;font-family:inherit;transition:.2s;width:100%;margin-top:16px}
+        .btn:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(102,126,234,.4)}
+        .btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+        .hidden{display:none!important}
+        .loading{text-align:center;padding:32px 0}
+        .spinner{width:40px;height:40px;border:4px solid #e5e7eb;border-top-color:#764ba2;border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 16px}
+        @keyframes spin{to{transform:rotate(360deg)}}
+        .preview{margin-top:24px;border-top:1px solid #f1f5f9;padding-top:24px}
+        .preview h3{font-size:18px;margin-bottom:16px}
+        .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px}
+        .stat{background:#f8fafc;border-radius:12px;padding:16px;text-align:center}
+        .stat .num{font-size:28px;font-weight:700;color:#667eea}
+        .stat .label{font-size:13px;color:#6b7280;margin-top:4px}
+        .segment{background:#f8fafc;border-radius:10px;padding:12px 16px;margin-bottom:8px;border-right:4px solid #667eea}
+        .segment .id{background:#e0e7ff;color:#4338ca;padding:2px 8px;border-radius:6px;font-size:12px;font-weight:700;margin-left:8px}
+        .segment .speaker{font-size:12px;color:#9ca3af;margin-bottom:4px}
+        .segment .text{color:#374151}
+        .actions{display:flex;gap:12px;margin-top:20px}
+        .actions .btn{flex:1}
+        .btn-cancel{background:#f3f4f6;color:#374151}
+        .btn-cancel:hover{background:#e5e7eb;box-shadow:none;transform:none}
+        .progress-section{margin-top:24px}
+        .progress-bar{background:#e5e7eb;border-radius:8px;height:8px;overflow:hidden;margin-bottom:12px}
+        .progress-fill{height:100%;background:linear-gradient(90deg,#667eea,#764ba2);border-radius:8px;transition:width .3s;width:0}
+        .progress-text{text-align:center;color:#6b7280;font-size:14px}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>📝 مدقق النصوص العربية</h1>
+        <p class="subtitle">ارفع ملف نصي وسنقوم بتصحيح الأخطاء الإملائية تلقائياً</p>
+        
+        <!-- Upload Zone -->
+        <div id="uploadZone" class="upload-zone">
+            <div class="icon">📄</div>
+            <h3 style="color:#374151;margin-bottom:8px">اسحب الملف هنا أو انقر للرفع</h3>
+            <div class="formats">
+                <span>📄 JSON</span>
+                <span>📝 TXT</span>
+                <span>🎬 SRT</span>
+                <span>🎞️ VTT</span>
+            </div>
+            <input type="file" id="fileInput" accept=".json,.txt,.srt,.vtt">
+            <button class="btn" style="width:auto;display:inline-block">اختر ملف</button>
+        </div>
+        
+        <!-- Loading -->
+        <div id="loading" class="loading hidden">
+            <div class="spinner"></div>
+            <p id="loadingText" style="color:#6b7280">جاري تحليل الملف...</p>
+        </div>
+        
+        <!-- Preview -->
+        <div id="preview" class="preview hidden">
+            <h3>📋 معاينة الملف</h3>
+            <div class="stats">
+                <div class="stat"><div class="num" id="totalSeg">0</div><div class="label">إجمالي المقاطع</div></div>
+                <div class="stat"><div class="num" id="textSeg">0</div><div class="label">مقاطع بنصوص</div></div>
+                <div class="stat"><div class="num" id="langCode">-</div><div class="label">اللغة</div></div>
+            </div>
+            <div id="segmentsList" style="max-height:256px;overflow-y:auto"></div>
+            <div class="actions">
+                <button id="correctBtn" class="btn">✨ تصحيح النصوص</button>
+                <button id="cancelBtn" class="btn btn-cancel">إلغاء</button>
+            </div>
+        </div>
+        
+        <!-- Progress -->
+        <div id="progressSection" class="progress-section hidden">
+            <h3 style="font-size:18px;margin-bottom:16px">⚙️ جاري التصحيح...</h3>
+            <div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
+            <p id="progressText" class="progress-text"></p>
+        </div>
+    </div>
+
+    <script>
+    const $ = s => document.querySelector(s);
+    let currentJobId = null;
+
+    // Upload zone
+    $('#uploadZone').addEventListener('click', () => $('#fileInput').click());
+    $('#uploadZone').addEventListener('dragover', e => { e.preventDefault(); $('#uploadZone').classList.add('dragover'); });
+    $('#uploadZone').addEventListener('dragleave', () => $('#uploadZone').classList.remove('dragover'));
+    $('#uploadZone').addEventListener('drop', e => {
+        e.preventDefault(); $('#uploadZone').classList.remove('dragover');
+        if (e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]);
+    });
+    $('#fileInput').addEventListener('change', e => { if (e.target.files[0]) uploadFile(e.target.files[0]); });
+
+    async function uploadFile(file) {
+        $('#uploadZone').classList.add('hidden');
+        $('#loading').classList.remove('hidden');
+        $('#loadingText').textContent = 'جاري تحليل الملف...';
+        
+        const form = new FormData();
+        form.append('file', file);
+        
+        try {
+            const res = await fetch('/upload', { method: 'POST', body: form });
+            const data = await res.json();
+            if (data.detail) { alert('خطأ: ' + data.detail); resetUI(); return; }
+            currentJobId = data.job_id;
+            showPreview(data);
+        } catch (err) {
+            alert('خطأ في رفع الملف: ' + err.message);
+            resetUI();
+        }
+    }
+
+    function showPreview(data) {
+        $('#loading').classList.add('hidden');
+        $('#preview').classList.remove('hidden');
+        $('#totalSeg').textContent = data.total_segments;
+        $('#textSeg').textContent = data.segments_with_text;
+        $('#langCode').textContent = data.data?.language || 'ar';
+        
+        const list = $('#segmentsList');
+        list.innerHTML = '';
+        (data.preview || []).forEach(seg => {
+            const txt = seg.text_original || '(فارغ)';
+            list.innerHTML += `<div class="segment">
+                <span class="id">${seg.id}</span>
+                ${seg.speaker ? `<div class="speaker">🎤 ${seg.speaker}</div>` : ''}
+                <div class="text">${txt}</div>
+            </div>`;
+        });
+        if (data.total_segments > 5) {
+            list.innerHTML += `<p style="text-align:center;color:#9ca3af;font-size:13px;padding:8px">... و ${data.total_segments - 5} مقطع آخر</p>`;
+        }
+    }
+
+    $('#correctBtn').addEventListener('click', startCorrection);
+    $('#cancelBtn').addEventListener('click', resetUI);
+
+    async function startCorrection() {
+        $('#preview').classList.add('hidden');
+        $('#progressSection').classList.remove('hidden');
+        const fill = $('#progressFill');
+        const text = $('#progressText');
+        fill.style.width = '5%';
+        text.textContent = 'جاري بدء التصحيح...';
+        
+        // Animate progress bar
+        let pct = 5;
+        const timer = setInterval(() => {
+            pct = Math.min(pct + 2, 90);
+            fill.style.width = pct + '%';
+        }, 500);
+        
+        try {
+            const res = await fetch(`/correct/${currentJobId}`, { method: 'POST' });
+            const data = await res.json();
+            clearInterval(timer);
+            
+            if (data.detail) {
+                alert('خطأ: ' + data.detail);
+                resetUI();
+                return;
+            }
+            
+            fill.style.width = '100%';
+            text.textContent = `✅ تم التصحيح! ${data.corrected_count} مقطع — ${data.stats?.dict_corrections || 0} تصحيح محلي، ${data.stats?.ai_corrections || 0} تصحيح AI`;
+            
+            setTimeout(() => {
+                window.location.href = data.editor_url;
+            }, 1200);
+        } catch (err) {
+            clearInterval(timer);
+            alert('خطأ في التصحيح: ' + err.message);
+            resetUI();
+        }
+    }
+
+    function resetUI() {
+        $('#uploadZone').classList.remove('hidden');
+        $('#loading').classList.add('hidden');
+        $('#preview').classList.add('hidden');
+        $('#progressSection').classList.add('hidden');
+        $('#fileInput').value = '';
+        currentJobId = null;
+    }
+    </script>
+</body>
+</html>
