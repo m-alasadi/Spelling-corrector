@@ -181,21 +181,15 @@ class SpellChecker:
         return hashlib.md5(text.encode('utf-8')).hexdigest()
     
     def _build_ai_prompt(self, texts: list, language: str = "ar") -> str:
-        """Build batch correction prompt for OpenAI."""
+        """Build batch correction prompt for OpenAI (optimized for speed)."""
         numbered = "\n".join([f"[{i+1}] {t}" for i, t in enumerate(texts)])
-        return f"""أنت مصحح إملائي محترف للغة العربية.
-
-النصوص التالية تحتاج تصحيح إملائي. كل نص مرقم بين [].
-
-النصوص:
+        return f"""صحح الأخطاء الإملائية في النصوص التالية:
 {numbered}
 
-تعليمات صارمة:
-1. صحح الأخطاء الإملائية فقط
-2. لا تغير المعنى أو الصياغة
-3. حافظ على اللهجة الأصلية
-4. لا تضيف أو تحذف كلمات
-5. أرجع النصوص المصححة فقط بالترتيب [1] [2]...
+القواعد:
+- صحح الإملاء فقط
+- لا تغير المعنى
+- أرجع النصوص بالترتيب [1] [2]...
 
 النصوص المصححة:"""
     
@@ -206,25 +200,30 @@ class SpellChecker:
         
         prompt = self._build_ai_prompt(texts, language)
         
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": "أنت مصحح إملائي محترف للنصوص العربية."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.1,
-                max_tokens=4096,
-            )
-            
-            result_text = response.choices[0].message.content.strip()
-            self.stats['api_calls'] += 1
-            
-            return self._parse_batch_result(result_text, len(texts))
-            
-        except Exception as e:
-            logger.error(f"AI API error: {e}")
-            return texts  # Return originals on error
+        for attempt in range(3):  # Retry up to 3 times
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": "مصحح إملائي عربي."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.1,
+                    max_tokens=2048,
+                )
+                
+                result_text = response.choices[0].message.content.strip()
+                self.stats['api_calls'] += 1
+                
+                return self._parse_batch_result(result_text, len(texts))
+                
+            except Exception as e:
+                if attempt < 2:  # Retry on failure
+                    import time
+                    time.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
+                    continue
+                logger.error(f"AI API error after {attempt+1} attempts: {e}")
+                return texts  # Return originals on error
     
     def _parse_batch_result(self, result_text: str, expected: int) -> list:
         """Parse numbered batch result from AI."""
@@ -303,7 +302,10 @@ class SpellChecker:
     def correct_batch(self, texts: list, language: str = "ar",
                       progress_callback: Optional[Callable] = None) -> list:
         """
-        Correct a batch of text segments.
+        Correct a batch of text segments (async-optimized).
+        
+        Uses ThreadPoolExecutor for parallel API calls.
+        This works reliably in both sync and async contexts.
         
         Args:
             texts: List of text strings
@@ -312,45 +314,71 @@ class SpellChecker:
             
         Returns: List of corrected texts
         """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
         total = len(texts)
-        results = []
+        results = [None] * total
         texts_needing_ai = []
         ai_indices = []
         
-        # Phase 1: Dictionary for all
+        # Phase 1: Dictionary for all (instant)
         for i, text in enumerate(texts):
             if not text or not text.strip():
-                results.append(text)
+                results[i] = text
+                continue
+            
+            # Skip very short texts (likely no errors)
+            word_count = len(text.split())
+            if word_count < 3:
+                results[i] = text
                 continue
             
             dict_result = self._correct_with_dict(text)
-            results.append(dict_result)
+            results[i] = dict_result
             
             if dict_result == text:
-                # Dictionary didn't fix it — needs AI
                 texts_needing_ai.append(text)
                 ai_indices.append(i)
             else:
                 self.stats['dict_corrections'] += 1
         
-        # Phase 2: AI for remaining (in batches of 10)
+        # Phase 2: AI for remaining (parallel with ThreadPoolExecutor)
         if self.client and texts_needing_ai:
-            batch_size = 10
+            batch_size = 30
+            
+            batches = []
+            batch_idx_list = []
             for batch_start in range(0, len(texts_needing_ai), batch_size):
                 batch = texts_needing_ai[batch_start:batch_start + batch_size]
                 batch_indices = ai_indices[batch_start:batch_start + batch_size]
-                
+                batches.append(batch)
+                batch_idx_list.append(batch_indices)
+            
+            def process_batch(args):
+                batch, batch_indices = args
                 ai_results = self._call_ai_batch(batch, language)
+                return list(zip(batch_indices, ai_results))
+            
+            # Use ThreadPoolExecutor with max 10 workers for parallel API calls
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                futures = [
+                    executor.submit(process_batch, (b, bi))
+                    for b, bi in zip(batches, batch_idx_list)
+                ]
                 
-                for idx, ai_text in zip(batch_indices, ai_results):
-                    if ai_text and ai_text != texts[idx]:
-                        results[idx] = ai_text
-                        self.stats['ai_corrections'] += 1
-                        self.cache[self._cache_key(texts[idx])] = ai_text
-                
-                if progress_callback:
-                    done = batch_start + len(batch)
-                    progress_callback(done, len(texts_needing_ai), f"AI: {done}/{len(texts_needing_ai)}")
+                for future in as_completed(futures):
+                    try:
+                        batch_results = future.result()
+                        for idx, ai_text in batch_results:
+                            if ai_text and ai_text != texts[idx]:
+                                results[idx] = ai_text
+                                self.stats['ai_corrections'] += 1
+                                self.cache[self._cache_key(texts[idx])] = ai_text
+                    except Exception as e:
+                        logger.error(f"Batch processing error: {e}")
+            
+            if progress_callback:
+                progress_callback(len(texts_needing_ai), len(texts_needing_ai), "AI complete")
         
         return results
     
