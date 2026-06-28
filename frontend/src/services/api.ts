@@ -86,6 +86,27 @@ export async function getDictStats(): Promise<DictStats> {
   return data;
 }
 
+// ─── Add Word to Dictionary ───
+export async function addToDictionary(
+  word: string,
+  correction?: string
+): Promise<{ success: boolean; word: string; message: string }> {
+  const { data } = await api.post('/api/dictionary/add', {
+    word,
+    correction: correction || null,
+  });
+  return data;
+}
+
+// ─── Cache Stats ───
+export async function getCacheStats(): Promise<{
+  total_cached: number;
+  memory_cached: number;
+}> {
+  const { data } = await api.get('/api/cache/stats');
+  return data;
+}
+
 // ─── Health Check ───
 export async function checkHealth(): Promise<HealthResponse> {
   const { data } = await api.get<HealthResponse>('/health');

@@ -437,6 +437,53 @@ async def get_dict_info():
     return d.get_stats()
 
 
+@app.get("/api/dictionary/words")
+async def get_dict_words():
+    """Get all words in the dictionary."""
+    d = get_dictionary()
+    return {'words': d.get_all_words(), 'count': len(d.get_all_words())}
+
+
+@app.post("/api/dictionary/add")
+async def add_to_dictionary(request: Request):
+    """
+    Add a word to the dictionary dynamically.
+    Body: {"word": "الكلمة", "correction": "التصحيح"} or {"word": "الكلمة"}
+    If correction is provided: adds as error => correction rule
+    If correction is None: adds as known correct word
+    """
+    body = await request.json()
+    word = body.get('word', '').strip()
+    correction = body.get('correction')
+    
+    if not word:
+        raise HTTPException(status_code=400, detail="Word is required")
+    
+    if correction:
+        correction = correction.strip()
+    
+    d = get_dictionary()
+    success = d.add_word(word, correction)
+    
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to add word")
+    
+    return {
+        'success': True,
+        'word': word,
+        'correction': correction,
+        'message': f'تمت إضافة "{word}" إلى القاموس',
+        'stats': d.get_stats(),
+    }
+
+
+@app.get("/api/cache/stats")
+async def get_cache_stats():
+    """Get cache statistics."""
+    checker = get_checker()
+    return checker.cache.stats()
+
+
 @app.get("/health")
 async def health():
     """Health check."""

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Check, X, ArrowLeft } from 'lucide-react';
+import { Check, X, ArrowLeft, BookOpen } from 'lucide-react';
 
 interface CorrectionPopupProps {
   original: string;
@@ -7,6 +7,7 @@ interface CorrectionPopupProps {
   position: { top: number; left: number };
   onAccept: () => void;
   onIgnore: () => void;
+  onAddToDict?: () => void;
   onClose: () => void;
 }
 
@@ -16,6 +17,7 @@ export default function CorrectionPopup({
   position,
   onAccept,
   onIgnore,
+  onAddToDict,
   onClose,
 }: CorrectionPopupProps) {
   const popupRef = useRef<HTMLDivElement>(null);
@@ -99,11 +101,20 @@ export default function CorrectionPopup({
           </button>
           <button
             onClick={onIgnore}
-            className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-gray-100 text-gray-600 text-sm font-semibold hover:bg-gray-200 border border-gray-200 transition-all"
+            className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-gray-100 text-gray-600 text-sm font-semibold hover:bg-gray-200 border border-gray-200 transition-all"
           >
             <X className="w-4 h-4" />
             تجاهل
           </button>
+          {onAddToDict && (
+            <button
+              onClick={onAddToDict}
+              className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-blue-50 text-blue-600 text-sm font-semibold hover:bg-blue-100 border border-blue-200 transition-all"
+              title="حفظ الكلمة في القاموس"
+            >
+              <BookOpen className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </div>
     </div>

@@ -201,6 +201,36 @@ export default function WordEditor({
     window.open(api.getDownloadUrl(jobId), '_blank');
   }, [jobId]);
 
+  // Add word to dictionary
+  const handleAddToDict = useCallback(async () => {
+    if (!popup.visible) return;
+    const { original, suggestion } = popup;
+
+    try {
+      await api.addToDictionary(original, suggestion);
+      // Treat as "ignored" locally
+      setSegments((prev) => {
+        const next = [...prev];
+        const seg = { ...next[popup.segmentIndex] };
+        const diffs = [...(seg.word_diffs || [])];
+        const wordDiffs = diffs.filter((d) => d.type === 'word' && !d.merged);
+        const targetDiff = wordDiffs[popup.wordIndex];
+        if (targetDiff) {
+          const idx = diffs.indexOf(targetDiff);
+          diffs[idx] = { ...targetDiff, ignored: true };
+          seg.word_diffs = diffs;
+          next[popup.segmentIndex] = seg;
+        }
+        return next;
+      });
+      setPopup((p) => ({ ...p, visible: false }));
+      alert(`✅ تمت إضافة "${original}" إلى القاموس`);
+    } catch (e) {
+      console.error('Failed to add to dictionary:', e);
+      alert('❌ فشلت الإضافة للقاموس');
+    }
+  }, [popup, jobId]);
+
   // Handle correction button
   const handleCorrect = useCallback(async () => {
     setIsProcessing(true);
@@ -397,6 +427,7 @@ export default function WordEditor({
           position={popup.position}
           onAccept={handleAccept}
           onIgnore={handleIgnore}
+          onAddToDict={handleAddToDict}
           onClose={() => setPopup((p) => ({ ...p, visible: false }))}
         />
       )}
