@@ -404,6 +404,32 @@ async def get_stats(job_id: str):
     }
 
 
+@app.get("/api/job/{job_id}")
+async def get_job_data(job_id: str):
+    """Get full job data with word_diffs for the React frontend."""
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    job = jobs[job_id]
+    data = job['data']
+    segments = data.get('segments', [])
+    
+    # Compute word-level diffs if not already done
+    if not any('word_diffs' in seg for seg in segments):
+        compute_all_diffs(segments)
+    
+    total_errors = sum(seg.get('error_count', 0) for seg in segments)
+    
+    return {
+        'job_id': job_id,
+        'filename': job['filename'],
+        'status': job['status'],
+        'corrected_count': job.get('corrected_count', 0),
+        'total_errors': total_errors,
+        'data': data,
+    }
+
+
 @app.get("/api/dictionary")
 async def get_dict_info():
     """Get dictionary statistics."""

@@ -1,0 +1,122 @@
+@import "tailwindcss";
+
+/* ─── Arabic Font ─── */
+@import url('https://fonts.googleapis.com/css2?family=Noto+Naskh+Arabic:wght@400;500;600;700&family=Noto+Kufi+Arabic:wght@400;500;600;700&display=swap');
+
+/* ─── Base ─── */
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Noto Kufi Arabic', system-ui, sans-serif;
+  margin: 0;
+  padding: 0;
+}
+
+.font-arabic {
+  font-family: 'Noto Naskh Arabic', Georgia, serif;
+}
+
+/* ─── Tiptap Editor Styles ─── */
+.tiptap {
+  outline: none;
+}
+
+.tiptap p {
+  margin: 0;
+  line-height: 2;
+}
+
+.tiptap .segment-block {
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  border-right: 3px solid transparent;
+  border-radius: 6px;
+  transition: background-color 0.15s;
+  position: relative;
+}
+
+.tiptap .segment-block:hover {
+  background-color: #f9fafb;
+}
+
+.tiptap .seg-number {
+  position: absolute;
+  left: -8px;
+  top: 8px;
+  background: #e0e7ff;
+  color: #4338ca;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 0 4px 4px 0;
+  font-family: 'Noto Kufi Arabic', sans-serif;
+  min-width: 18px;
+  text-align: center;
+  line-height: 1.4;
+}
+
+.tiptap .seg-speaker {
+  font-size: 11px;
+  color: #9ca3af;
+  margin-bottom: 4px;
+  font-family: 'Noto Kufi Arabic', sans-serif;
+}
+
+.tiptap .seg-text {
+  font-family: 'Noto Naskh Arabic', Georgia, serif;
+  font-size: 17px;
+  line-height: 2.1;
+}
+
+/* ─── Spell Error Decoration ─── */
+.spell-error {
+  text-decoration: underline wavy #ef4444;
+  text-decoration-skip-ink: none;
+  text-underline-offset: 4px;
+  text-decoration-thickness: 1.5px;
+  border-radius: 3px;
+  padding: 1px 2px;
+  margin: 0 1px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.spell-error:hover {
+  background-color: #fef2f2;
+  box-shadow: 0 0 0 2px #fca5a5;
+}
+
+/* ─── Animations ─── */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slide-in-from-bottom-2 {
+  from { transform: translateY(4px); }
+  to { transform: translateY(0); }
+}
+
+.animate-in {
+  animation: fade-in 0.15s ease, slide-in-from-bottom-2 0.15s ease;
+}
+
+/* ─── Scrollbar ─── */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
