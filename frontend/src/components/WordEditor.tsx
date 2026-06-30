@@ -4,11 +4,37 @@ import * as api from '../services/api';
 import RibbonToolbar from './RibbonToolbar';
 import CorrectionPopup from './CorrectionPopup';
 
+// Toast function
+function showToast(message: string, type: 'ok' | 'info' | 'error' = 'ok') {
+  const existing = document.querySelector('.custom-toast');
+  if (existing) existing.remove();
+  
+  const toast = document.createElement('div');
+  toast.className = `custom-toast fixed bottom-12 left-1/2 -translate-x-1/2 z-[2000] px-5 py-2.5 rounded-lg text-white text-sm font-medium shadow-lg transition-all duration-300 opacity-0 translate-y-4`;
+  toast.style.background = type === 'ok' ? '#16a34a' : type === 'error' ? '#dc2626' : '#2563eb';
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  
+  requestAnimationFrame(() => {
+    toast.style.opacity = '1';
+    toast.style.transform = 'translateX(-50%) translateY(0)';
+  });
+  
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateX(-50%) translateY(16px)';
+    setTimeout(() => toast.remove(), 300);
+  }, 2500);
+}
+
 interface WordEditorProps {
   jobId: string;
   segments: Segment[];
   filename: string;
   initialCorrectedCount: number;
+  isStreaming: boolean;
+  progress: number;
+  onBack: () => void;
 }
 
 interface PopupState {
@@ -25,6 +51,9 @@ export default function WordEditor({
   segments: initialSegments,
   filename,
   initialCorrectedCount,
+  isStreaming,
+  progress,
+  onBack,
 }: WordEditorProps) {
   const [segments, setSegments] = useState<Segment[]>(initialSegments);
   const [popup, setPopup] = useState<PopupState>({
@@ -36,6 +65,11 @@ export default function WordEditor({
     position: { top: 0, left: 0 },
   });
   const [isProcessing, setIsProcessing] = useState(false);
+
+  // Sync segments from props (when SSE updates arrive)
+  useEffect(() => {
+    setSegments(initialSegments);
+  }, [initialSegments]);
 
   // Calculate error count
   const errorCount = useMemo(() => {
@@ -231,6 +265,43 @@ export default function WordEditor({
     }
   }, [popup, jobId]);
 
+  // Manual correction (user types the correction)
+  const handleManualCorrect = useCallback(async (correctedText: string) => {
+    if (!popup.visible) return;
+    const { segmentIndex, wordIndex, original } = popup;
+    const seg = segments[segmentIndex];
+    const diffs = seg.word_diffs || [];
+    const wordDiffs = diffs.filter((d) => d.type === 'word' && !d.merged);
+    const context = seg.text_original || '';
+
+    try {
+      // Save to database + dictionary
+      await api.saveCorrection(original, correctedText, context, 'user');
+
+      // Update local state
+      setSegments((prev) => {
+        const next = [...prev];
+        const s = { ...next[segmentIndex] };
+        const d = [...(s.word_diffs || [])];
+        const wd = d.filter((x) => x.type === 'word' && !x.merged);
+        const target = wd[wordIndex];
+        if (target) {
+          const idx = d.indexOf(target);
+          d[idx] = { ...target, accepted: true, suggestion: correctedText };
+          s.word_diffs = d;
+          next[segmentIndex] = s;
+        }
+        return next;
+      });
+
+      setPopup((p) => ({ ...p, visible: false }));
+      showToast(`✅ تم حفظ التصحيح: ${original} → ${correctedText}`, 'ok');
+    } catch (e) {
+      console.error('Failed to save manual correction:', e);
+      showToast('❌ فشل حفظ التصحيح', 'error');
+    }
+  }, [popup, segments, jobId]);
+
   // Handle correction button
   const handleCorrect = useCallback(async () => {
     setIsProcessing(true);
@@ -319,19 +390,53 @@ export default function WordEditor({
         onJumpNext={handleJumpNext}
       />
 
+      {/* Streaming Progress Bar */}
+      {isStreaming && (
+        <div className="bg-blue-50 border-b border-blue-200 px-6 py-3">
+          <div className="max-w-4xl mx-auto flex items-center gap-4">
+            <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin shrink-0" />
+            <div className="flex-1">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-sm font-medium text-blue-700">
+                  جاري التصحيح...
+                </span>
+                <span className="text-xs text-blue-500">
+                  {progress}% — {correctedCount} مقطع تم تصحيحه
+                </span>
+              </div>
+              <div className="w-full bg-blue-200 rounded-full h-1.5">
+                <div
+                  className="bg-blue-500 h-1.5 rounded-full transition-all duration-300"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Canvas - A4 Paper */}
       <div className="flex-1 py-8 px-4">
         <div className="max-w-4xl mx-auto">
           <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
             {/* Paper Header */}
             <div className="flex items-center justify-between px-8 py-4 border-b border-gray-100 bg-gray-50/50">
-              <h2 className="text-sm font-semibold text-gray-700">
-                📄 {filename}
-              </h2>
+              <div className="flex items-center gap-3">
+                <h2 className="text-sm font-semibold text-gray-700">
+                  📄 {filename}
+                </h2>
+                {isStreaming && (
+                  <span className="text-xs bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full animate-pulse">
+                    جاري التصحيح
+                  </span>
+                )}
+              </div>
               <span className="text-xs text-gray-400">
-                {errorCount === 0
-                  ? '✅ تم التصحيح بالكامل'
-                  : `${errorCount} أخطاء متبقية`}
+                {isStreaming
+                  ? `${progress}% مكتمل`
+                  : errorCount === 0
+                    ? '✅ تم التصحيح بالكامل'
+                    : `${errorCount} أخطاء متبقية`}
               </span>
             </div>
 
@@ -427,7 +532,7 @@ export default function WordEditor({
           position={popup.position}
           onAccept={handleAccept}
           onIgnore={handleIgnore}
-          onAddToDict={handleAddToDict}
+          onManualCorrect={handleManualCorrect}
           onClose={() => setPopup((p) => ({ ...p, visible: false }))}
         />
       )}

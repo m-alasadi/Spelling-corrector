@@ -61,53 +61,107 @@ jobs = {}
 # ──────────────────────────────────────────────────────────────
 
 def parse_uploaded_file(content: bytes, filename: str) -> dict:
-    """Parse uploaded file into segments."""
+    """Parse uploaded file into segments. Auto-detects JSON content."""
     ext = Path(filename).suffix.lower()
+    text = content.decode('utf-8')
     
-    if ext == '.json':
-        data = json.loads(content.decode('utf-8'))
-        if 'segments' not in data:
-            # Try to parse as simple text JSON
-            if 'text' in data:
-                data = _text_to_segments(data['text'], filename)
-            else:
-                raise ValueError("JSON file must contain 'segments' or 'text' key")
-        return data
+    # Try JSON first (auto-detect even if extension is .txt)
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            if 'segments' in data:
+                return data
+            elif 'text' in data:
+                return _text_to_segments(data['text'], filename)
+            # JSON object without segments/text — treat each value as segment
+            elif any(isinstance(v, str) for v in data.values()):
+                # Might be flat JSON like {"1": "text", "2": "text"}
+                segments = []
+                for k, v in data.items():
+                    if isinstance(v, str) and v.strip():
+                        segments.append({
+                            'id': len(segments) + 1,
+                            'text_original': v,
+                            'text_corrected': None,
+                            'speaker': None,
+                        })
+                if segments:
+                    return {
+                        'job_id': str(uuid.uuid4())[:8],
+                        'source_file': filename,
+                        'language': 'ar',
+                        'segments': segments,
+                    }
+    except (json.JSONDecodeError, ValueError):
+        pass
     
-    elif ext == '.txt':
-        text = content.decode('utf-8')
+    # Not JSON — treat as plain text
+    if ext in ('.txt', '.text'):
         return _text_to_segments(text, filename)
     
     elif ext == '.srt':
-        text = content.decode('utf-8')
         return _parse_srt(text, filename)
     
     elif ext == '.vtt':
-        text = content.decode('utf-8')
         return _parse_vtt(text, filename)
     
-    else:
-        raise ValueError(f"Unsupported format: {ext}")
+    # Fallback: try as text
+    return _text_to_segments(text, filename)
 
 
 def _text_to_segments(text: str, filename: str) -> dict:
-    """Convert plain text to segments."""
-    paragraphs = re.split(r'\n\s*\n|\n', text)
+    """
+    Convert plain text to segments.
+    Groups short consecutive lines into paragraphs.
+    """
+    lines = re.split(r'\n', text)
     segments = []
-    for i, para in enumerate(paragraphs):
-        para = para.strip()
-        if para:
-            segments.append({
-                'id': i + 1,
-                'text_original': para,
-                'text_corrected': None,
-                'speaker': None,
-            })
+    current_paragraph = []
+    
+    for line in lines:
+        stripped = line.strip()
+        
+        if not stripped:
+            # Empty line = paragraph break
+            if current_paragraph:
+                para_text = ' '.join(current_paragraph)
+                segments.append({
+                    'id': len(segments) + 1,
+                    'text_original': para_text,
+                    'text_corrected': None,
+                    'speaker': None,
+                })
+                current_paragraph = []
+        else:
+            current_paragraph.append(stripped)
+    
+    # Don't forget last paragraph
+    if current_paragraph:
+        para_text = ' '.join(current_paragraph)
+        segments.append({
+            'id': len(segments) + 1,
+            'text_original': para_text,
+            'text_corrected': None,
+            'speaker': None,
+        })
+    
+    # Fallback: if no paragraphs found, split by any newline
+    if not segments:
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped:
+                segments.append({
+                    'id': len(segments) + 1,
+                    'text_original': stripped,
+                    'text_corrected': None,
+                    'speaker': None,
+                })
+    
     return {
         'job_id': str(uuid.uuid4())[:8],
         'source_file': filename,
         'language': 'ar',
-        'segments': segments
+        'segments': segments,
     }
 
 
@@ -228,14 +282,13 @@ async def upload_file(file: UploadFile = File(...)):
         total_segments = len(data['segments'])
         segments_with_text = sum(1 for s in data['segments'] if s.get('text_original', '').strip())
         
+        # Return lightweight response (segments will come via SSE)
         return {
             'success': True,
             'job_id': job_id,
             'filename': file.filename,
             'total_segments': total_segments,
             'segments_with_text': segments_with_text,
-            'preview': data['segments'][:5],
-            'data': data,
         }
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
@@ -482,6 +535,235 @@ async def get_cache_stats():
     """Get cache statistics."""
     checker = get_checker()
     return checker.cache.stats()
+
+
+# ──────────────────────────────────────────────────────────────
+# Error Database: Track corrections
+# ──────────────────────────────────────────────────────────────
+
+@app.post("/api/corrections/save")
+async def save_correction(request: Request):
+    """
+    Save a correction (AI or user manual).
+    Body: {"original": "...", "corrected": "...", "context": "...", "source": "ai|user"}
+    """
+    from error_db import get_error_db
+    from dictionary import get_dictionary
+    
+    body = await request.json()
+    original = body.get('original', '').strip()
+    corrected = body.get('corrected', '').strip()
+    context = body.get('context', '')
+    source = body.get('source', 'user')
+    
+    if not original or not corrected:
+        raise HTTPException(status_code=400, detail="original and corrected are required")
+    if original == corrected:
+        raise HTTPException(status_code=400, detail="original and corrected must be different")
+    
+    db = get_error_db()
+    db.save_correction(original, corrected, context, source)
+    
+    # Also add to dictionary for immediate effect
+    d = get_dictionary()
+    d.add_word(original, corrected)
+    
+    return {
+        'success': True,
+        'original': original,
+        'corrected': corrected,
+        'source': source,
+        'message': f'تم حفظ التصحيح: {original} → {corrected}',
+        'stats': db.get_stats(),
+    }
+
+
+@app.get("/api/corrections/stats")
+async def get_correction_stats():
+    """Get error database statistics."""
+    from error_db import get_error_db
+    db = get_error_db()
+    return db.get_stats()
+
+
+@app.get("/api/corrections/common")
+async def get_common_errors(min_frequency: int = 2, limit: int = 50):
+    """Get most common errors."""
+    from error_db import get_error_db
+    db = get_error_db()
+    return {'errors': db.get_common_errors(min_frequency, limit)}
+
+
+@app.get("/api/corrections/word/{word}")
+async def get_word_corrections(word: str):
+    """Get all corrections for a specific word."""
+    from error_db import get_error_db
+    db = get_error_db()
+    return {'word': word, 'corrections': db.get_corrections_for_word(word)}
+
+
+# ──────────────────────────────────────────────────────────────
+# SSE: Real-time correction streaming
+# ──────────────────────────────────────────────────────────────
+
+@app.get("/correct-stream/{job_id}")
+async def correct_stream(job_id: str):
+    """
+    SSE endpoint: streams corrections using PARALLEL processing.
+    
+    Uses ThreadPoolExecutor for parallel API calls.
+    Results are streamed as they complete.
+    """
+    from fastapi.responses import StreamingResponse
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    
+    if job_id not in jobs:
+        async def error_gen():
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Job not found'})}\n\n"
+        return StreamingResponse(error_gen(), media_type="text/event-stream")
+    
+    job = jobs[job_id]
+    data = job['data']
+    segments = data.get('segments', [])
+    language = data.get('language', 'ar')
+    
+    async def event_generator():
+        checker = get_checker()
+        total = len(segments)
+        
+        # ── Step 1: Send all segments immediately (raw text) ──
+        init_segments = []
+        for seg in segments:
+            init_segments.append({
+                'id': seg.get('id'),
+                'text_original': seg.get('text_original', ''),
+                'text_corrected': seg.get('text_corrected'),
+                'speaker': seg.get('speaker'),
+                'word_diffs': seg.get('word_diffs'),
+            })
+        
+        yield f"data: {json.dumps({'type': 'init', 'segments': init_segments, 'filename': job['filename']})}\n\n"
+        
+        # ── Step 2: Pre-filter + Dict + Cache (instant, parallel) ──
+        segments_needing_ai = []  # (index, text)
+        
+        for i, seg in enumerate(segments):
+            text = seg.get('text_original', '')
+            
+            if not text or not text.strip():
+                # Empty segment — mark as done
+                yield f"data: {json.dumps({'type': 'segment', 'index': i, 'text_corrected': text, 'word_diffs': [{'type': 'word', 'value': text or '', 'is_error': False, 'suggestion': None}], 'error_count': 0})}\n\n"
+                continue
+            
+            # Pre-filter check
+            from spell_checker import should_skip_ai
+            if should_skip_ai(text):
+                yield f"data: {json.dumps({'type': 'segment', 'index': i, 'text_corrected': text, 'word_diffs': [{'type': 'word', 'value': text, 'is_error': False, 'suggestion': None}], 'error_count': 0})}\n\n"
+                continue
+            
+            # Cache check
+            cached = checker.cache.get(text)
+            if cached is not None:
+                word_diffs = compute_word_diff(text, cached)
+                error_count = sum(1 for w in word_diffs if w.get('is_error'))
+                seg['text_corrected'] = cached
+                seg['word_diffs'] = word_diffs
+                seg['error_count'] = error_count
+                yield f"data: {json.dumps({'type': 'segment', 'index': i, 'text_corrected': cached, 'word_diffs': word_diffs, 'error_count': error_count})}\n\n"
+                continue
+            
+            # Dictionary check
+            dict_result = checker._correct_with_dict(text)
+            if dict_result != text:
+                word_diffs = compute_word_diff(text, dict_result)
+                error_count = sum(1 for w in word_diffs if w.get('is_error'))
+                seg['text_corrected'] = dict_result
+                seg['word_diffs'] = word_diffs
+                seg['error_count'] = error_count
+                checker.cache.set(text, dict_result, checker.model)
+                yield f"data: {json.dumps({'type': 'segment', 'index': i, 'text_corrected': dict_result, 'word_diffs': word_diffs, 'error_count': error_count})}\n\n"
+                continue
+            
+            # Needs AI — collect for parallel processing
+            segments_needing_ai.append((i, text))
+        
+        # ── Step 3: AI processing (PARALLEL with Semaphore) ──
+        if segments_needing_ai and checker.client:
+            batch_size = 30
+            semaphore = threading.Semaphore(5)
+            
+            # Split into batches
+            batches = []
+            for batch_start in range(0, len(segments_needing_ai), batch_size):
+                batch = segments_needing_ai[batch_start:batch_start + batch_size]
+                batches.append(batch)
+            
+            def process_batch(batch):
+                texts = [t for _, t in batch]
+                indices = [i for i, _ in batch]
+                
+                with semaphore:
+                    # Call AI for the batch
+                    ai_results = checker._call_ai_batch(texts, language)
+                
+                return list(zip(indices, ai_results))
+            
+            # Process batches in parallel
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = [executor.submit(process_batch, b) for b in batches]
+                
+                for future in as_completed(futures):
+                    try:
+                        batch_results = future.result()
+                        for idx, ai_text in batch_results:
+                            original_text = segments[idx].get('text_original', '')
+                            
+                            if ai_text and ai_text != original_text:
+                                word_diffs = compute_word_diff(original_text, ai_text)
+                                error_count = sum(1 for w in word_diffs if w.get('is_error'))
+                                segments[idx]['text_corrected'] = ai_text
+                                segments[idx]['word_diffs'] = word_diffs
+                                segments[idx]['error_count'] = error_count
+                                checker.cache.set(original_text, ai_text, checker.model)
+                            else:
+                                # No change
+                                word_diffs = [{'type': 'word', 'value': original_text, 'is_error': False, 'suggestion': None}]
+                                segments[idx]['text_corrected'] = original_text
+                                segments[idx]['word_diffs'] = word_diffs
+                                segments[idx]['error_count'] = 0
+                            
+                            # Stream this segment result
+                            yield f"data: {json.dumps({'type': 'segment', 'index': idx, 'text_corrected': segments[idx]['text_corrected'], 'word_diffs': word_diffs, 'error_count': error_count})}\n\n"
+                    
+                    except Exception as e:
+                        logger.error(f"Batch error: {e}")
+        
+        # ── Step 4: Final summary ──
+        corrected_count = sum(1 for s in segments if s.get('text_corrected') != s.get('text_original'))
+        total_errors = sum(s.get('error_count', 0) for s in segments)
+        
+        # Save output
+        output_path = EXPORT_DIR / f"{job_id}_corrected.json"
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        
+        job['status'] = 'corrected'
+        job['output_path'] = str(output_path)
+        job['corrected_count'] = corrected_count
+        
+        stats = checker.get_stats()
+        yield f"data: {json.dumps({'type': 'done', 'corrected_count': corrected_count, 'total_errors': total_errors, 'stats': stats})}\n\n"
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no',
+        }
+    )
 
 
 @app.get("/health")

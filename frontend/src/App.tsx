@@ -1,47 +1,123 @@
-import { useState, useCallback } from 'react';
-import type { JobData } from './types';
+import { useState, useCallback, useRef } from 'react';
+import type { JobData, Segment } from './types';
+import type { SSEEvent } from './services/api';
 import * as api from './services/api';
 import UploadScreen from './components/UploadScreen';
 import WordEditor from './components/WordEditor';
 
 type AppState =
   | { screen: 'upload' }
-  | { screen: 'processing'; jobId: string; filename: string }
-  | { screen: 'editor'; jobId: string; data: JobData; filename: string; correctedCount: number };
+  | { screen: 'editor'; jobId: string; segments: Segment[]; filename: string; correctedCount: number; totalErrors: number; isStreaming: boolean; progress: number };
 
 function App() {
   const [state, setState] = useState<AppState>({ screen: 'upload' });
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const sseRef = useRef<{ abort: () => void } | null>(null);
 
   const handleUpload = useCallback(async (file: File) => {
     setIsUploading(true);
     setUploadError(null);
 
     try {
-      // Step 1: Upload file
+      // Step 1: Upload file (lightweight response)
       const uploadResult = await api.uploadFile(file);
 
-      setState({
-        screen: 'processing',
-        jobId: uploadResult.job_id,
-        filename: uploadResult.filename,
-      });
-
-      // Step 2: Run correction
-      const correctResult = await api.correctFile(uploadResult.job_id);
-
-      // Step 3: Fetch corrected data with word_diffs
-      const jobData = await api.getJobData(correctResult.job_id);
-
-      // Step 4: Open editor
+      // Step 2: Open editor immediately with empty segments
+      // (Segments will arrive via SSE init event)
       setState({
         screen: 'editor',
-        jobId: correctResult.job_id,
-        data: jobData.data,
+        jobId: uploadResult.job_id,
+        segments: [],
         filename: uploadResult.filename,
-        correctedCount: correctResult.corrected_count,
+        correctedCount: 0,
+        totalErrors: 0,
+        isStreaming: true,
+        progress: 0,
       });
+
+      // Step 3: Start SSE correction in background
+      // Segments are received via the 'init' event
+      let segments: Segment[] = [];
+
+      sseRef.current = api.streamCorrection(
+        uploadResult.job_id,
+        (event: SSEEvent) => {
+          if (event.type === 'init') {
+            // Receive all segments from SSE
+            segments = event.segments.map((s: any) => ({
+              id: s.id,
+              text_original: s.text_original || '',
+              text_corrected: s.text_corrected || null,
+              speaker: s.speaker || null,
+              word_diffs: s.word_diffs || undefined,
+              error_count: 0,
+            }));
+            setState((prev) => {
+              if (prev.screen !== 'editor') return prev;
+              return { ...prev, segments: [...segments] };
+            });
+          } else if (event.type === 'segment') {
+            // Update a single segment with correction
+            const idx = event.index;
+            if (idx < segments.length) {
+              segments[idx] = {
+                ...segments[idx],
+                text_corrected: event.text_corrected,
+                word_diffs: event.word_diffs,
+                error_count: event.error_count,
+              };
+              // Force re-render by creating new array
+              setState((prev) => {
+                if (prev.screen !== 'editor') return prev;
+                const newSegs = [...segments];
+                return {
+                  ...prev,
+                  segments: newSegs,
+                };
+              });
+            }
+          } else if (event.type === 'progress') {
+            setState((prev) => {
+              if (prev.screen !== 'editor') return prev;
+              return {
+                ...prev,
+                progress: event.percent,
+                correctedCount: event.corrected,
+              };
+            });
+          } else if (event.type === 'done') {
+            setState((prev) => {
+              if (prev.screen !== 'editor') return prev;
+              // Calculate final error count
+              const totalErrors = segments.reduce((acc, seg) => {
+                const diffs = seg.word_diffs || [];
+                return acc + diffs.filter((w: any) => w.is_error && !w.accepted && !w.ignored && !w.merged).length;
+              }, 0);
+              return {
+                ...prev,
+                isStreaming: false,
+                progress: 100,
+                correctedCount: event.corrected_count,
+                totalErrors,
+              };
+            });
+          } else if (event.type === 'error') {
+            console.error('SSE error:', event.message);
+            setState((prev) => {
+              if (prev.screen !== 'editor') return prev;
+              return { ...prev, isStreaming: false };
+            });
+          }
+        },
+        (error) => {
+          console.error('SSE connection error:', error);
+          setState((prev) => {
+            if (prev.screen !== 'editor') return prev;
+            return { ...prev, isStreaming: false };
+          });
+        }
+      );
     } catch (err: any) {
       const message =
         err.response?.data?.detail || err.message || 'حدث خطأ غير متوقع';
@@ -50,6 +126,15 @@ function App() {
     } finally {
       setIsUploading(false);
     }
+  }, []);
+
+  const handleBack = useCallback(() => {
+    // Abort any running SSE
+    if (sseRef.current) {
+      sseRef.current.abort();
+      sseRef.current = null;
+    }
+    setState({ screen: 'upload' });
   }, []);
 
   return (
@@ -62,29 +147,15 @@ function App() {
         />
       )}
 
-      {state.screen === 'processing' && (
-        <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-purple-50 flex items-center justify-center">
-          <div className="text-center">
-            <div className="w-16 h-16 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-6" />
-            <h2 className="text-xl font-semibold text-gray-700 mb-2">
-              جاري التصحيح...
-            </h2>
-            <p className="text-sm text-gray-400">
-              نقوم بتحليل "{state.filename}" باستخدام الذكاء الاصطناعي
-            </p>
-            <p className="text-xs text-gray-400 mt-4">
-              قد يستغرق هذا بعض الوقت حسب حجم الملف
-            </p>
-          </div>
-        </div>
-      )}
-
       {state.screen === 'editor' && (
         <WordEditor
           jobId={state.jobId}
-          segments={state.data.segments}
+          segments={state.segments}
           filename={state.filename}
           initialCorrectedCount={state.correctedCount}
+          isStreaming={state.isStreaming}
+          progress={state.progress}
+          onBack={handleBack}
         />
       )}
     </div>

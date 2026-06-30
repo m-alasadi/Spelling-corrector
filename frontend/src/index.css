@@ -1,7 +1,5 @@
-@import "tailwindcss";
-
-/* ─── Arabic Font ─── */
 @import url('https://fonts.googleapis.com/css2?family=Noto+Naskh+Arabic:wght@400;500;600;700&family=Noto+Kufi+Arabic:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
 
 /* ─── Base ─── */
 * {

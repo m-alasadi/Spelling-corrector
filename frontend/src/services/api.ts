@@ -98,6 +98,43 @@ export async function addToDictionary(
   return data;
 }
 
+// ─── Save Correction (AI or User Manual) ───
+export async function saveCorrection(
+  original: string,
+  corrected: string,
+  context: string = '',
+  source: 'ai' | 'user' = 'user'
+): Promise<{ success: boolean; message: string }> {
+  const { data } = await api.post('/api/corrections/save', {
+    original,
+    corrected,
+    context,
+    source,
+  });
+  return data;
+}
+
+// ─── Get Correction Stats ───
+export async function getCorrectionStats(): Promise<{
+  total_rules: number;
+  total_frequency: number;
+  user_corrections: number;
+  ai_corrections: number;
+}> {
+  const { data } = await api.get('/api/corrections/stats');
+  return data;
+}
+
+// ─── Get Common Errors ───
+export async function getCommonErrors(minFrequency: number = 2): Promise<{
+  errors: Array<{ original: string; corrected: string; frequency: number }>;
+}> {
+  const { data } = await api.get('/api/corrections/common', {
+    params: { min_frequency: minFrequency },
+  });
+  return data;
+}
+
 // ─── Cache Stats ───
 export async function getCacheStats(): Promise<{
   total_cached: number;
@@ -105,6 +142,106 @@ export async function getCacheStats(): Promise<{
 }> {
   const { data } = await api.get('/api/cache/stats');
   return data;
+}
+
+// ─── SSE: Real-time correction streaming ──
+
+export interface SSEInitEvent {
+  type: 'init';
+  segments: Array<{
+    id: number;
+    text_original: string;
+    text_corrected: string | null;
+    speaker: string | null;
+    word_diffs: any[] | null;
+  }>;
+  filename: string;
+}
+
+export interface SSESegmentEvent {
+  type: 'segment';
+  index: number;
+  text_corrected: string;
+  word_diffs: any[];
+  error_count: number;
+}
+
+export interface SSEProgressEvent {
+  type: 'progress';
+  current: number;
+  total: number;
+  percent: number;
+  corrected: number;
+}
+
+export interface SSEDoneEvent {
+  type: 'done';
+  corrected_count: number;
+  total_segments: number;
+  stats: any;
+}
+
+export interface SSEErrorEvent {
+  type: 'error';
+  message: string;
+}
+
+export type SSEEvent = SSEInitEvent | SSESegmentEvent | SSEProgressEvent | SSEDoneEvent | SSEErrorEvent;
+
+/**
+ * Connect to SSE correction stream.
+ * Returns an object with onEvent callback and abort controller.
+ */
+export function streamCorrection(
+  jobId: string,
+  onEvent: (event: SSEEvent) => void,
+  onError?: (error: Error) => void
+): { abort: () => void } {
+  const controller = new AbortController();
+  
+  const url = `${API_BASE}/correct-stream/${jobId}`;
+  
+  fetch(url, { signal: controller.signal })
+    .then(async (response) => {
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('No response body');
+      
+      const decoder = new TextDecoder();
+      let buffer = '';
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        buffer += decoder.decode(value, { stream: true });
+        
+        // Parse SSE events (separated by \n\n)
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';  // Keep incomplete line in buffer
+        
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              onEvent(data);
+            } catch (e) {
+              // Ignore malformed JSON
+            }
+          }
+        }
+      }
+    })
+    .catch((error) => {
+      if (error.name !== 'AbortError') {
+        onError?.(error);
+      }
+    });
+  
+  return { abort: () => controller.abort() };
 }
 
 // ─── Health Check ───

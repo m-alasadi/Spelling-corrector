@@ -33,8 +33,6 @@ export interface UploadResponse {
   filename: string;
   total_segments: number;
   segments_with_text: number;
-  preview: Segment[];
-  data: JobData;
 }
 
 export interface CorrectResponse {
