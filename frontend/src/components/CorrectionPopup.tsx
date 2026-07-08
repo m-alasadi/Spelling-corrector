@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, X, ArrowLeft, BookOpen, Pencil } from 'lucide-react';
+import { Check, X, ArrowLeft, Pencil } from 'lucide-react';
 
 interface CorrectionPopupProps {
   original: string;

@@ -28,6 +28,14 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
+      '/api/grammar-check': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      '/api/grammar-check-batch': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
     },
   },
 })

@@ -69,3 +69,31 @@ export interface HealthResponse {
   status: string;
   timestamp: string;
 }
+
+// ─── Grammar Check Types ───
+export interface GrammarResult {
+  original_text: string;
+  corrected_text: string;
+}
+
+export interface GrammarError {
+  id: string;
+  segmentId: number;
+  original: string;
+  corrected: string;
+  accepted: boolean;
+  rejected: boolean;
+}
+
+export interface GrammarBatchResult {
+  id: number;
+  original: string;
+  corrected: string;
+}
+
+export interface GrammarWordDiff {
+  type: 'word' | 'space' | 'punct';
+  value: string;
+  is_error: boolean;
+  suggestion: string | null;
+}

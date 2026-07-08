@@ -5,7 +5,6 @@ import {
   FileCode,
   Film,
   Loader2,
-  CheckCircle2,
   AlertCircle,
 } from 'lucide-react';
 

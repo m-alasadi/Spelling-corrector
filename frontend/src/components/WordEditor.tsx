@@ -1,5 +1,5 @@
-import { useState, useCallback, useEffect, useMemo } from 'react';
-import type { Segment, WordDiff } from '../types';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import type { Segment, WordDiff, GrammarBatchResult, GrammarWordDiff } from '../types';
 import * as api from '../services/api';
 import RibbonToolbar from './RibbonToolbar';
 import CorrectionPopup from './CorrectionPopup';
@@ -35,6 +35,10 @@ interface WordEditorProps {
   isStreaming: boolean;
   progress: number;
   onBack: () => void;
+  /** Active editing mode */
+  activeMode: 'spell' | 'grammar';
+  /** Callback when mode changes */
+  onModeChange: (mode: 'spell' | 'grammar') => void;
 }
 
 interface PopupState {
@@ -44,16 +48,21 @@ interface PopupState {
   original: string;
   suggestion: string;
   position: { top: number; left: number };
+  type: 'spell' | 'grammar';
+  segId?: number;
+  grammarWordIdx?: number;
 }
 
 export default function WordEditor({
   jobId,
   segments: initialSegments,
   filename,
-  initialCorrectedCount,
+  initialCorrectedCount: _initialCorrectedCount,
   isStreaming,
   progress,
-  onBack,
+  onBack: _onBack,
+  activeMode,
+  onModeChange,
 }: WordEditorProps) {
   const [segments, setSegments] = useState<Segment[]>(initialSegments);
   const [popup, setPopup] = useState<PopupState>({
@@ -63,8 +72,16 @@ export default function WordEditor({
     original: '',
     suggestion: '',
     position: { top: 0, left: 0 },
+    type: 'spell',
   });
   const [isProcessing, setIsProcessing] = useState(false);
+  const [grammarErrors, setGrammarErrors] = useState(0);
+  const [isGrammarChecking, setIsGrammarChecking] = useState(false);
+  const [grammarChecked, setGrammarChecked] = useState(false);
+  const [_grammarResults, setGrammarResults] = useState<GrammarBatchResult[]>([]);
+  const [grammarWordDiffs, setGrammarWordDiffs] = useState<Map<number, GrammarWordDiff[]>>(new Map());
+  const [grammarAccepted, setGrammarAccepted] = useState<Set<string>>(new Set());
+  const grammarCheckRun = useRef(false);
 
   // Sync segments from props (when SSE updates arrive)
   useEffect(() => {
@@ -93,88 +110,206 @@ export default function WordEditor({
     }, 0);
   }, [segments]);
 
-  // Handle click on error word
+  // ─── Grammar Check: Auto-run on all segments when opening grammar tab ───
+  useEffect(() => {
+    if (activeMode !== 'grammar' || grammarChecked || isGrammarChecking || isStreaming) return;
+
+    const runGrammarCheck = async () => {
+      setIsGrammarChecking(true);
+      try {
+        // Build segments for batch check (use corrected text if available)
+        const segsForCheck = segments
+          .filter((s) => (s.text_corrected || s.text_original)?.trim())
+          .map((s) => ({
+            id: s.id,
+            text: s.text_corrected || s.text_original,
+          }));
+
+        if (segsForCheck.length === 0) return;
+
+        const result = await api.grammarCheckBatch(segsForCheck);
+
+        // Compute word diffs for each grammar result
+        const diffsMap = new Map<number, GrammarWordDiff[]>();
+        let errorCount = 0;
+
+        for (const r of result.results) {
+          if (r.original !== r.corrected) {
+            const diffs = computeGrammarDiff(r.original, r.corrected);
+            diffsMap.set(r.id, diffs);
+            errorCount += diffs.filter((d) => d.is_error).length;
+          }
+        }
+
+        setGrammarResults(result.results);
+        setGrammarWordDiffs(diffsMap);
+        setGrammarErrors(errorCount);
+        setGrammarChecked(true);
+        grammarCheckRun.current = true;
+      } catch (e) {
+        console.error('Grammar batch check failed:', e);
+      } finally {
+        setIsGrammarChecking(false);
+      }
+    };
+
+    runGrammarCheck();
+  }, [activeMode, grammarChecked, isGrammarChecking, isStreaming, segments]);
+
+  // Compute grammar word-level diff
+  function computeGrammarDiff(original: string, corrected: string): GrammarWordDiff[] {
+    const origTokens = original.split(/(\s+)/);
+    const corrTokens = corrected.split(/(\s+)/);
+    const diffs: GrammarWordDiff[] = [];
+
+    for (let i = 0; i < origTokens.length; i++) {
+      const orig = origTokens[i];
+      const corr = corrTokens[i] || orig;
+      if (orig.trim() === '') {
+        diffs.push({ type: 'space', value: orig, is_error: false, suggestion: null });
+      } else if (orig !== corr) {
+        diffs.push({ type: 'word', value: orig, is_error: true, suggestion: corr });
+      } else {
+        diffs.push({ type: 'word', value: orig, is_error: false, suggestion: null });
+      }
+    }
+    return diffs;
+  }
+
+  // Handle click on error word (spell OR grammar)
   const handleWordClick = useCallback(
-    (segIdx: number, wordLocalIdx: number, event: React.MouseEvent) => {
+    (segIdx: number, wordLocalIdx: number, event: React.MouseEvent, grammarInfo?: { segId: number; grammarIdx: number }) => {
+      const rect = (event.target as HTMLElement).getBoundingClientRect();
+      const pos = { top: rect.bottom + 8, left: rect.left + rect.width / 2 - 160 };
+
+      // Grammar word click
+      if (grammarInfo && activeMode === 'grammar') {
+        const gDiff = grammarWordDiffs.get(grammarInfo.segId)?.[grammarInfo.grammarIdx];
+        if (gDiff && gDiff.is_error && gDiff.suggestion) {
+          setPopup({
+            visible: true,
+            segmentIndex: segIdx,
+            wordIndex: wordLocalIdx,
+            original: gDiff.value,
+            suggestion: gDiff.suggestion,
+            position: pos,
+            type: 'grammar',
+            segId: grammarInfo.segId,
+            grammarWordIdx: grammarInfo.grammarIdx,
+          });
+          return;
+        }
+      }
+
+      // Spell word click
       const seg = segments[segIdx];
       const diffs = seg.word_diffs || [];
       const wordDiffs = diffs.filter((d) => d.type === 'word' && !d.merged);
       const diff = wordDiffs[wordLocalIdx];
 
       if (diff && diff.is_error && !diff.accepted && !diff.ignored) {
-        const rect = (event.target as HTMLElement).getBoundingClientRect();
         setPopup({
           visible: true,
           segmentIndex: segIdx,
           wordIndex: wordLocalIdx,
           original: diff.value,
           suggestion: diff.suggestion || '',
-          position: {
-            top: rect.bottom + 8,
-            left: rect.left + rect.width / 2 - 160,
-          },
+          position: pos,
+          type: 'spell',
         });
       }
     },
-    [segments]
+    [segments, activeMode, grammarWordDiffs]
   );
 
-  // Accept correction
+  // Accept correction (spell or grammar)
   const handleAccept = useCallback(async () => {
     if (!popup.visible) return;
-    const { segmentIndex, wordIndex } = popup;
+    const { segmentIndex, wordIndex, type, segId, grammarWordIdx } = popup;
 
-    setSegments((prev) => {
-      const next = [...prev];
-      const seg = { ...next[segmentIndex] };
-      const diffs = [...(seg.word_diffs || [])];
-      const wordDiffs = diffs.filter((d) => d.type === 'word' && !d.merged);
-      const targetDiff = wordDiffs[wordIndex];
-      if (targetDiff) {
-        const idx = diffs.indexOf(targetDiff);
-        diffs[idx] = { ...targetDiff, accepted: true };
-        seg.word_diffs = diffs;
-        next[segmentIndex] = seg;
+    if (type === 'grammar' && segId !== undefined && grammarWordIdx !== undefined) {
+      // Accept grammar correction: replace word in text AND update word_diffs
+      const gDiff = grammarWordDiffs.get(segId)?.[grammarWordIdx];
+      if (gDiff?.suggestion) {
+        setGrammarAccepted((prev) => new Set([...prev, `${segId}-${grammarWordIdx}`]));
+        setSegments((prev) =>
+          prev.map((seg) => {
+            if (seg.id !== segId) return seg;
+            // Replace in text_corrected
+            const text = seg.text_corrected || seg.text_original;
+            const newText = text.replace(gDiff.value, gDiff.suggestion || '');
+            // Update word_diffs: change the accepted word's value to suggestion, mark accepted
+            const newDiffs = (seg.word_diffs || []).map((d) => {
+              if (d.type === 'word' && d.value === gDiff.value && !d.accepted && !d.ignored) {
+                return { ...d, value: gDiff.suggestion || d.value, accepted: true, suggestion: gDiff.suggestion };
+              }
+              return d;
+            });
+            return { ...seg, text_corrected: newText, word_diffs: newDiffs };
+          })
+        );
+        showToast(`✅ تم التصحيح النحوي: ${gDiff.value} → ${gDiff.suggestion}`, 'ok');
       }
-      return next;
-    });
+    } else {
+      // Accept spell correction
+      setSegments((prev) => {
+        const next = [...prev];
+        const seg = { ...next[segmentIndex] };
+        const diffs = [...(seg.word_diffs || [])];
+        const wordDiffs = diffs.filter((d) => d.type === 'word' && !d.merged);
+        const targetDiff = wordDiffs[wordIndex];
+        if (targetDiff) {
+          const idx = diffs.indexOf(targetDiff);
+          diffs[idx] = { ...targetDiff, accepted: true };
+          seg.word_diffs = diffs;
+          next[segmentIndex] = seg;
+        }
+        return next;
+      });
+
+      try {
+        await api.applyCorrection(jobId, segmentIndex, wordIndex, 'accept');
+      } catch (e) {
+        console.error('Failed to sync correction:', e);
+      }
+    }
 
     setPopup((p) => ({ ...p, visible: false }));
+  }, [popup, jobId, grammarWordDiffs]);
 
-    try {
-      await api.applyCorrection(jobId, segmentIndex, wordIndex, 'accept');
-    } catch (e) {
-      console.error('Failed to sync correction:', e);
-    }
-  }, [popup, jobId]);
-
-  // Ignore correction
+  // Ignore correction (spell or grammar)
   const handleIgnore = useCallback(async () => {
     if (!popup.visible) return;
-    const { segmentIndex, wordIndex } = popup;
+    const { segmentIndex, wordIndex, type, segId, grammarWordIdx } = popup;
 
-    setSegments((prev) => {
-      const next = [...prev];
-      const seg = { ...next[segmentIndex] };
-      const diffs = [...(seg.word_diffs || [])];
-      const wordDiffs = diffs.filter((d) => d.type === 'word' && !d.merged);
-      const targetDiff = wordDiffs[wordIndex];
-      if (targetDiff) {
-        const idx = diffs.indexOf(targetDiff);
-        diffs[idx] = { ...targetDiff, ignored: true };
-        seg.word_diffs = diffs;
-        next[segmentIndex] = seg;
+    if (type === 'grammar' && segId !== undefined && grammarWordIdx !== undefined) {
+      // Reject grammar correction: mark as accepted (dismissed)
+      setGrammarAccepted((prev) => new Set([...prev, `${segId}-${grammarWordIdx}`]));
+    } else {
+      // Ignore spell correction
+      setSegments((prev) => {
+        const next = [...prev];
+        const seg = { ...next[segmentIndex] };
+        const diffs = [...(seg.word_diffs || [])];
+        const wordDiffs = diffs.filter((d) => d.type === 'word' && !d.merged);
+        const targetDiff = wordDiffs[wordIndex];
+        if (targetDiff) {
+          const idx = diffs.indexOf(targetDiff);
+          diffs[idx] = { ...targetDiff, ignored: true };
+          seg.word_diffs = diffs;
+          next[segmentIndex] = seg;
+        }
+        return next;
+      });
+
+      try {
+        await api.applyCorrection(jobId, segmentIndex, wordIndex, 'ignore');
+      } catch (e) {
+        console.error('Failed to sync ignore:', e);
       }
-      return next;
-    });
+    }
 
     setPopup((p) => ({ ...p, visible: false }));
-
-    try {
-      await api.applyCorrection(jobId, segmentIndex, wordIndex, 'ignore');
-    } catch (e) {
-      console.error('Failed to sync ignore:', e);
-    }
   }, [popup, jobId]);
 
   // Accept all
@@ -221,57 +356,26 @@ export default function WordEditor({
     }
   }, [jobId]);
 
-  // Jump to next error
+  // Jump to next error (spell or grammar)
   const handleJumpNext = useCallback(() => {
-    const firstError = document.querySelector('.spell-error');
+    const selector = activeMode === 'grammar' ? '.grammar-error:not(.spell-error)' : '.spell-error';
+    const firstError = document.querySelector(selector) || document.querySelector('.spell-error') || document.querySelector('.grammar-error');
     if (firstError) {
       firstError.scrollIntoView({ behavior: 'smooth', block: 'center' });
       (firstError as HTMLElement).click();
     }
-  }, []);
+  }, [activeMode]);
 
   // Download
   const handleDownload = useCallback(() => {
     window.open(api.getDownloadUrl(jobId), '_blank');
   }, [jobId]);
 
-  // Add word to dictionary
-  const handleAddToDict = useCallback(async () => {
-    if (!popup.visible) return;
-    const { original, suggestion } = popup;
-
-    try {
-      await api.addToDictionary(original, suggestion);
-      // Treat as "ignored" locally
-      setSegments((prev) => {
-        const next = [...prev];
-        const seg = { ...next[popup.segmentIndex] };
-        const diffs = [...(seg.word_diffs || [])];
-        const wordDiffs = diffs.filter((d) => d.type === 'word' && !d.merged);
-        const targetDiff = wordDiffs[popup.wordIndex];
-        if (targetDiff) {
-          const idx = diffs.indexOf(targetDiff);
-          diffs[idx] = { ...targetDiff, ignored: true };
-          seg.word_diffs = diffs;
-          next[popup.segmentIndex] = seg;
-        }
-        return next;
-      });
-      setPopup((p) => ({ ...p, visible: false }));
-      alert(`✅ تمت إضافة "${original}" إلى القاموس`);
-    } catch (e) {
-      console.error('Failed to add to dictionary:', e);
-      alert('❌ فشلت الإضافة للقاموس');
-    }
-  }, [popup, jobId]);
-
   // Manual correction (user types the correction)
   const handleManualCorrect = useCallback(async (correctedText: string) => {
     if (!popup.visible) return;
     const { segmentIndex, wordIndex, original } = popup;
     const seg = segments[segmentIndex];
-    const diffs = seg.word_diffs || [];
-    const wordDiffs = diffs.filter((d) => d.type === 'word' && !d.merged);
     const context = seg.text_original || '';
 
     try {
@@ -315,10 +419,28 @@ export default function WordEditor({
     }
   }, [jobId]);
 
-  // Render a segment's tokens
+  // Render a segment's tokens (with grammar underline support)
   const renderSegmentTokens = (segIdx: number, diffs: WordDiff[]) => {
+    const seg = segments[segIdx];
+    const segId = seg?.id;
+    const gDiffs = grammarWordDiffs.get(segId);
+    const isGrammarMode = activeMode === 'grammar' && gDiffs && gDiffs.length > 0;
+
     let wordLocalIdx = 0;
     const elements: React.ReactNode[] = [];
+
+    // Build a lookup of grammar errors by word value for fast matching
+    const grammarErrorMap = new Map<string, { suggestion: string; gIdx: number }>();
+    if (isGrammarMode && gDiffs) {
+      gDiffs.forEach((gd, gi) => {
+        if (gd.type === 'word' && gd.is_error && gd.suggestion) {
+          // Store first occurrence of each error word
+          if (!grammarErrorMap.has(gd.value)) {
+            grammarErrorMap.set(gd.value, { suggestion: gd.suggestion, gIdx: gi });
+          }
+        }
+      });
+    }
 
     for (let i = 0; i < diffs.length; i++) {
       const token = diffs[i];
@@ -329,37 +451,72 @@ export default function WordEditor({
         const idx = wordLocalIdx;
         wordLocalIdx++;
 
+        // Check for grammar error by matching word VALUE (not index)
+        let hasGrammarError = false;
+        let grammarSuggestion = '';
+        let grammarMatchIdx = -1;
+        if (isGrammarMode) {
+          const match = grammarErrorMap.get(token.value);
+          if (match && !grammarAccepted.has(`${segId}-${match.gIdx}`)) {
+            hasGrammarError = true;
+            grammarSuggestion = match.suggestion;
+            grammarMatchIdx = match.gIdx;
+          }
+        }
+
+        // Determine CSS class
+        let className = '';
         if (token.is_error && !token.accepted && !token.ignored) {
-          // Error word - red wavy underline
+          className = 'spell-error';
+          if (hasGrammarError) className += ' grammar-error';
+        } else if (hasGrammarError) {
+          className = 'grammar-error';
+        } else if (token.accepted) {
+          className = 'bg-green-100 text-green-800 rounded px-0.5 font-medium';
+        } else if (token.ignored) {
+          className = 'text-gray-400';
+        }
+
+        if (token.is_error && !token.accepted && !token.ignored) {
+          // Spell error (may also have grammar error)
           elements.push(
             <span
               key={`w-${segIdx}-${i}`}
-              className="spell-error"
+              className={className}
               onClick={(e) => handleWordClick(segIdx, idx, e)}
-              title={`اقتراح: ${token.suggestion || '—'}`}
+              title={hasGrammarError ? `نحوي: ${grammarSuggestion}` : `اقتراح: ${token.suggestion || '—'}`}
+            >
+              {token.value}
+            </span>
+          );
+        } else if (hasGrammarError) {
+          // Grammar-only error: clickable
+          elements.push(
+            <span
+              key={`w-${segIdx}-${i}`}
+              className={className}
+              onClick={(e) => handleWordClick(segIdx, idx, e, { segId, grammarIdx: grammarMatchIdx })}
+              title={`تصحيح نحوي: ${grammarSuggestion}`}
             >
               {token.value}
             </span>
           );
         } else if (token.accepted) {
-          // Accepted word - green highlight
           elements.push(
             <span
               key={`w-${segIdx}-${i}`}
-              className="bg-green-100 text-green-800 rounded px-0.5 font-medium"
+              className={className}
             >
               {token.suggestion || token.value}
             </span>
           );
         } else if (token.ignored) {
-          // Ignored word
           elements.push(
-            <span key={`w-${segIdx}-${i}`} className="text-gray-400">
+            <span key={`w-${segIdx}-${i}`} className={className}>
               {token.value}
             </span>
           );
         } else {
-          // Normal word
           elements.push(
             <span key={`w-${segIdx}-${i}`}>{token.value}</span>
           );
@@ -388,6 +545,9 @@ export default function WordEditor({
         onIgnoreAll={handleIgnoreAll}
         onDownload={handleDownload}
         onJumpNext={handleJumpNext}
+        activeMode={activeMode}
+        onModeChange={onModeChange}
+        grammarErrorCount={grammarErrors}
       />
 
       {/* Streaming Progress Bar */}
@@ -397,90 +557,52 @@ export default function WordEditor({
             <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin shrink-0" />
             <div className="flex-1">
               <div className="flex items-center justify-between mb-1">
-                <span className="text-sm font-medium text-blue-700">
-                  جاري التصحيح...
-                </span>
-                <span className="text-xs text-blue-500">
-                  {progress}% — {correctedCount} مقطع تم تصحيحه
-                </span>
+                <span className="text-sm font-medium text-blue-700">جاري التصحيح...</span>
+                <span className="text-xs text-blue-500">{progress}% — {correctedCount} مقطع تم تصحيحه</span>
               </div>
               <div className="w-full bg-blue-200 rounded-full h-1.5">
-                <div
-                  className="bg-blue-500 h-1.5 rounded-full transition-all duration-300"
-                  style={{ width: `${progress}%` }}
-                />
+                <div className="bg-blue-500 h-1.5 rounded-full transition-all duration-300" style={{ width: `${progress}%` }} />
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Canvas - A4 Paper */}
-      <div className="flex-1 py-8 px-4">
+      {/* Main Layout */}
+      <div className="flex-1 overflow-y-auto py-8 px-4">
         <div className="max-w-4xl mx-auto">
           <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
             {/* Paper Header */}
             <div className="flex items-center justify-between px-8 py-4 border-b border-gray-100 bg-gray-50/50">
               <div className="flex items-center gap-3">
-                <h2 className="text-sm font-semibold text-gray-700">
-                  📄 {filename}
-                </h2>
+                <h2 className="text-sm font-semibold text-gray-700">📄 {filename}</h2>
                 {isStreaming && (
-                  <span className="text-xs bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full animate-pulse">
-                    جاري التصحيح
-                  </span>
+                  <span className="text-xs bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full animate-pulse">جاري التصحيح</span>
                 )}
               </div>
               <span className="text-xs text-gray-400">
-                {isStreaming
-                  ? `${progress}% مكتمل`
-                  : errorCount === 0
-                    ? '✅ تم التصحيح بالكامل'
-                    : `${errorCount} أخطاء متبقية`}
+                {isStreaming ? `${progress}% مكتمل` : errorCount === 0 ? '✅ تم التصحيح بالكامل' : `${errorCount} أخطاء متبقية`}
               </span>
             </div>
 
             {/* Document Content */}
-            <div
-              className="p-12 min-h-[600px] leading-[2.2] text-gray-800"
-              dir="rtl"
-              style={{ fontFamily: "'Noto Naskh Arabic', Georgia, serif", fontSize: '20px' }}
-            >
+            <div className="p-12 min-h-[600px] leading-[2.2] text-gray-800" dir="rtl" style={{ fontFamily: "'Noto Naskh Arabic', Georgia, serif", fontSize: '20px' }}>
               {segments.length === 0 ? (
-                <div className="text-center text-gray-400 py-20">
-                  لا يوجد محتوى للعرض
-                </div>
+                <div className="text-center text-gray-400 py-20">لا يوجد محتوى للعرض</div>
               ) : (
                 segments.map((seg, segIdx) => {
                   const diffs = seg.word_diffs || [];
-                  const segErrors = diffs.filter(
-                    (w) => w.is_error && !w.accepted && !w.ignored && !w.merged
-                  ).length;
+                  const segErrors = diffs.filter((w) => w.is_error && !w.accepted && !w.ignored && !w.merged).length;
                   const hasErrors = segErrors > 0;
-
                   return (
-                    <div
-                      key={seg.id}
-                      className={`relative mb-1 py-2 px-4 rounded-lg border-r-3 transition-colors hover:bg-gray-50 ${
-                        hasErrors
-                          ? 'border-r-red-400'
-                          : 'border-r-transparent'
-                      }`}
-                    >
-                      {/* Segment Number */}
-                      <span className="absolute -left-2 top-2 bg-indigo-100 text-indigo-700 text-[10px] font-bold px-2 py-0.5 rounded-r-lg font-sans min-w-[18px] text-center">
-                        {seg.id}
-                      </span>
-
-                      {/* Speaker */}
+                    <div key={seg.id} className={`relative mb-1 py-2 px-4 rounded-lg border-r-3 transition-colors hover:bg-gray-50 ${hasErrors ? 'border-r-red-400' : 'border-r-transparent'}`}>
+                      <span className="absolute -left-2 top-2 bg-indigo-100 text-indigo-700 text-[10px] font-bold px-2 py-0.5 rounded-r-lg font-sans min-w-[18px] text-center">{seg.id}</span>
                       {seg.speaker && (
                         <div className="text-[11px] text-gray-400 mb-1 font-sans flex items-center gap-1">
                           <span className="w-1 h-1 rounded-full bg-blue-500" />
                           {seg.speaker}
                         </div>
                       )}
-
-                      {/* Text */}
                       <div className="font-arabic text-[20px] leading-[2.2]">
                         {renderSegmentTokens(segIdx, diffs)}
                       </div>
@@ -503,24 +625,9 @@ export default function WordEditor({
           <span>{correctedCount} مقبولة</span>
         </div>
         <div className="flex items-center gap-4">
-          <span>
-            <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-200 rounded text-[10px]">
-              Tab
-            </kbd>{' '}
-            التالي
-          </span>
-          <span>
-            <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-200 rounded text-[10px]">
-              Enter
-            </kbd>{' '}
-            قبول
-          </span>
-          <span>
-            <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-200 rounded text-[10px]">
-              Esc
-            </kbd>{' '}
-            إغلاق
-          </span>
+          <span><kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-200 rounded text-[10px]">Tab</kbd> التالي</span>
+          <span><kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-200 rounded text-[10px]">Enter</kbd> قبول</span>
+          <span><kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-200 rounded text-[10px]">Esc</kbd> إغلاق</span>
         </div>
       </div>
 

@@ -6,6 +6,8 @@ import type {
   DictStats,
   HealthResponse,
   JobData,
+  GrammarResult,
+  GrammarBatchResult,
 } from '../types';
 
 const API_BASE = '';  // Use Vite proxy in dev, or set to 'http://localhost:8000' for production
@@ -145,6 +147,97 @@ export async function getCacheStats(): Promise<{
 }
 
 // ─── SSE: Real-time correction streaming ──
+
+// ─── Grammar Check ───
+export async function grammarCheck(text: string): Promise<GrammarResult> {
+  const { data } = await api.post<GrammarResult>('/api/grammar-check', { text });
+  return data;
+}
+
+export interface GrammarBatchResponse {
+  results: GrammarBatchResult[];
+}
+
+export async function grammarCheckBatch(
+  segments: { id: number; text: string }[]
+): Promise<GrammarBatchResponse> {
+  const { data } = await api.post<GrammarBatchResponse>('/api/grammar-check-batch', { segments });
+  return data;
+}
+
+// ─── Stage 1: Spell Check (New Two-Step Pipeline) ───
+
+export interface Stage1Result {
+  original: string;
+  corrected: string;
+  word_diffs: any[];
+  source: string;
+}
+
+export interface Stage1BatchResponse {
+  results: Array<{
+    id: number;
+    original: string;
+    corrected: string;
+    word_diffs: any[];
+    source: string;
+  }>;
+}
+
+export async function stage1SpellCheck(text: string): Promise<Stage1Result> {
+  const { data } = await api.post<Stage1Result>('/api/stage1/spell-check', { text });
+  return data;
+}
+
+export async function stage1SpellCheckBatch(
+  segments: { id: number; text: string }[]
+): Promise<Stage1BatchResponse> {
+  const { data } = await api.post<Stage1BatchResponse>('/api/stage1/spell-check-batch', { segments });
+  return data;
+}
+
+// ─── Stage 2: Grammar & Style (New Two-Step Pipeline) ───
+
+export interface Stage2Result {
+  original: string;
+  corrected: string;
+  word_diffs: any[];
+  mode: string;
+  punctuation_added: boolean;
+}
+
+export interface Stage2BatchResponse {
+  results: Array<{
+    id: number;
+    original: string;
+    corrected: string;
+    word_diffs: any[];
+  }>;
+}
+
+export async function stage2GrammarStyle(
+  text: string,
+  addPunctuation: boolean = false,
+  mode: 'preserve' | 'msa' = 'preserve'
+): Promise<Stage2Result> {
+  const { data } = await api.post<Stage2Result>('/api/stage2/grammar-style', {
+    text,
+    add_punctuation: addPunctuation,
+    mode,
+  });
+  return data;
+}
+
+export async function stage2GrammarStyleBatch(
+  segments: { id: number; text: string }[],
+  addPunctuation: boolean = false,
+  mode: 'preserve' | 'msa' = 'preserve'
+): Promise<Stage2BatchResponse> {
+  const { data } = await api.post<Stage2BatchResponse>('/api/stage2/grammar-style-batch', segments, {
+    params: { add_punctuation: addPunctuation, mode },
+  });
+  return data;
+}
 
 export interface SSEInitEvent {
   type: 'init';

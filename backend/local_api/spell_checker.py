@@ -295,13 +295,46 @@ class SpellChecker:
 
     # ── Prompt Builder (Optimized) ──
     def _build_ai_prompt(self, texts: list, language: str = "ar") -> str:
-        """Build batch correction prompt — minimal tokens."""
+        """Build batch correction prompt — SPELLING ONLY, no grammar, no punctuation."""
         numbered = "\n".join([f"[{i+1}] {t}" for i, t in enumerate(texts)])
-        return f"""صحح الأخطاء الإملائية:
+        return f"""صحح الأخطاء الإملائية فقط:
 {numbered}
 
-القواعد: صحح الإملاء فقط، لا تغير المعنى، أرجع بالترتيب [1] [2]...
-النصوص المصححة:"""
+قواعد صارمة:
+1. صحح الإملاء فقط: الهمزات (اول→أول، ان→أن)، الألفات (الى→إلى)، التاء المربوطة (مئه→مئة)، الحروف المقطوعة.
+2. لا تُغيّر علامات الترقيم مطلقاً (نقاط، فواصل، علامات استفهام).
+3. لا تصحح القواعد النحوية (الإعراب، الرفع، النصب، الجر).
+4. لا تحوّل كلمات عامية إلى فصحى (احنا، هسه، شلون — تبقى كما هي).
+5. لا تُغيّر المعنى ولا تُضيف كلمات جديدة.
+6. إذا النص صحيح إملائياً، أرجعه كما هو بالضبط.
+
+أعد النصوص المصححة بالترتيب [1] [2]..."""
+
+    def build_spell_only_prompt(self, texts: list) -> str:
+        """
+        Build a STRICT spelling-only prompt.
+        Used by Stage 1 endpoint.
+        No grammar, no punctuation, no dialect changes.
+        """
+        numbered = "\n".join([f"[{i+1}] {t}" for i, t in enumerate(texts)])
+        return f"""أنت مدقق إملائي عربي محترف. صحح الإملاء فقط.
+
+ما تصححه (فقط):
+- الهمزات: "اول" → "أول"، "ان" → "أن"
+- الألفات: "الى" → "إلى"
+- التاء المربوطة: "مئه" → "مئة"
+
+ما لا تصححه مطلقاً:
+- لا تُغيّر علامات الترقيم (نقاط، فواصل، علامات استفهام)
+- لا تصحح القواعد النحوية (الإعراب، الرفع، النصب، الجر، التنوين)
+- لا تحوّل كلمات عامية إلى فصحى (احنا، هسه، شلون — تبقى كما هي)
+- لا تُضيف أو تحذف كلمات
+
+إذا النص صحيح إملائياً، أرجعه كما هو بالضبط.
+
+{numbered}
+
+أعد النصوص المصححة بالترتيب [1] [2]..."""
 
     # ── AI Call with Retry ──
     def _call_ai_batch(self, texts: list, language: str = "ar") -> list:
@@ -316,7 +349,7 @@ class SpellChecker:
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[
-                        {"role": "system", "content": "مصحح إملائي عربي."},
+                        {"role": "system", "content": "أنت مدقق إملائي عربي فقط. صحح الإملاء فقط ولا تصحح النحو ولا تغيّر الترقيم."},
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.1,

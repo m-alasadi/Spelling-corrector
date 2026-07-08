@@ -22,11 +22,14 @@ import uuid
 import logging
 from pathlib import Path
 from datetime import datetime
+from enum import Enum
+from typing import List, Optional
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
@@ -54,6 +57,189 @@ templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 
 # In-memory job storage
 jobs = {}
+
+
+# ──────────────────────────────────────────────────────────────
+# Pydantic Models — Two-Step Pipeline
+# ──────────────────────────────────────────────────────────────
+
+class ProcessingMode(str, Enum):
+    preserve = "preserve"  # Keep dialect, fix grammar only
+    msa = "msa"            # Convert to Modern Standard Arabic
+
+class Stage2Request(BaseModel):
+    """Request body for Stage 2: Grammar & Style."""
+    text: str = Field(..., description="Clean text from Stage 1")
+    add_punctuation: bool = Field(False, description="Add punctuation marks?")
+    mode: ProcessingMode = Field(
+        ProcessingMode.preserve,
+        description="'preserve' = keep dialect, 'msa' = convert to formal Arabic"
+    )
+
+class SpellCheckRequest(BaseModel):
+    """Request body for Stage 1: Spell Check."""
+    text: str = Field(..., description="Raw text to spell-check")
+
+class SegmentInput(BaseModel):
+    id: int
+    text: str
+
+class Stage1BatchRequest(BaseModel):
+    """Batch request for Stage 1."""
+    segments: List[SegmentInput]
+
+
+# ──────────────────────────────────────────────────────────────
+# Dynamic Prompt Builder — Stage 2
+# ──────────────────────────────────────────────────────────────
+
+def build_grammar_prompt(add_punctuation: bool, mode: ProcessingMode) -> str:
+    """
+    Build System Prompt dynamically based on user options.
+    
+    Args:
+        add_punctuation: Whether to add punctuation marks.
+        mode: 'preserve' (keep dialect) or 'msa' (convert to formal).
+    
+    Returns:
+        System prompt string for OpenAI.
+    """
+    base = "أنت خبير لغوي متخصص في النحو العربي والصياغة.\n\n"
+
+    # ── Dialect handling ──
+    if mode == ProcessingMode.preserve:
+        dialect_rule = """⚠️ قاعدة صارمة للهجة العامية:
+- حافظ على اللهجة العامية تماماً.
+- لا تحول الكلمات الدارجة إلى فصحى.
+- أمثلة: "عندنا" تبقى "عندنا"، "هسه" تبقى "هسه"، "شلون" تبقى "شلون".
+- قم بتصحيح القواعد النحوية (الإعراب، الرفع، النصب) للكلمات الفصحى فقط.
+
+"""
+    else:  # msa
+        dialect_rule = """⚠️ قاعدة تحويل الفصحى:
+- أعد صياغة النص بأسلوب احترافي وبليغ.
+- حوّل جميع الكلمات والأساليب العامية إلى لغة عربية فصحى رسمية.
+- حافظ على المعنى الأصلي مع تحسين الأسلوب.
+- مثال: "عندنا مشكلة" → "لدينا مشكلة"، "هسه" → "الآن".
+
+"""
+
+    # ── Punctuation handling ──
+    if add_punctuation:
+        punct_rule = """📝 قاعدة الترقيم:
+- أضف علامات الترقيم المناسبة (فواصل، نقاط، علامات استفهام) لتنظيم النص.
+- ضع الفواصل في مواضع التوقف المنطقية.
+- ضع النقاط في نهاية الجمل.
+
+"""
+    else:
+        punct_rule = """📝 تحذير صارم للترقيم:
+- لا تقم بإضافة أو تعديل أي علامات ترقيم.
+- احتفظ بجميع النقاط والفواصل والمسافات كما هي بالضبط.
+
+"""
+
+    # ── Common rules ──
+    common = """قواعد عامة:
+1. لا تُضيف كلمات جديدة ولا تحذف كلمات موجودة.
+2. حافظ على بنية الجملة الأصلية.
+3. إذا النص صحيح، أرجعه كما هو بدون أي تعديل.
+4. أعد النص فقط بدون أي شرح أو تعليق.
+"""
+
+    return base + dialect_rule + punct_rule + common
+
+
+# ──────────────────────────────────────────────────────────────
+# Diffing Strategy — Smart N-to-M
+# ──────────────────────────────────────────────────────────────
+
+def compute_smart_diff(original: str, corrected: str) -> list:
+    """
+    Smart diff that handles N-to-M word changes (merge/split).
+    Used for MSA mode where AI might merge or split words.
+    """
+    import difflib
+
+    if not original or not original.strip():
+        return [{'type': 'word', 'value': original or '', 'is_error': False, 'suggestion': None}]
+
+    orig_tokens = tokenize_arabic(original)
+    corr_tokens = tokenize_arabic(corrected)
+
+    orig_words = [t['value'] for t in orig_tokens if t['type'] == 'word']
+    corr_words = [t['value'] for t in corr_tokens if t['type'] == 'word']
+
+    matcher = difflib.SequenceMatcher(None, orig_words, corr_words, autojunk=False)
+
+    corrections = {}
+    for op, i1, i2, j1, j2 in matcher.get_opcodes():
+        if op == 'equal':
+            for k in range(i1, i2):
+                corrections[k] = {'is_error': False, 'suggestion': None}
+
+        elif op == 'replace':
+            orig_slice = orig_words[i1:i2]
+            corr_slice = corr_words[j1:j2]
+            orig_count = i2 - i1
+            corr_count = j2 - j1
+
+            if orig_count == corr_count:
+                # 1-to-1 replacement
+                for offset in range(orig_count):
+                    corrections[i1 + offset] = {
+                        'is_error': True,
+                        'suggestion': corr_slice[offset]
+                    }
+            elif orig_count == 1 and corr_count > 1:
+                # 1-to-N split: original word split into multiple
+                corrections[i1] = {
+                    'is_error': True,
+                    'suggestion': ' '.join(corr_slice)
+                }
+            elif orig_count > 1 and corr_count == 1:
+                # N-to-1 merge: multiple words merged into one
+                corrections[i1] = {
+                    'is_error': True,
+                    'suggestion': corr_slice[0]
+                }
+                for k in range(i1 + 1, i2):
+                    corrections[k] = {'is_error': True, 'suggestion': None, 'merged': True}
+            else:
+                # N-to-M: complex change
+                corrections[i1] = {
+                    'is_error': True,
+                    'suggestion': ' '.join(corr_slice)
+                }
+                for k in range(i1 + 1, i2):
+                    corrections[k] = {'is_error': True, 'suggestion': None, 'merged': True}
+
+        elif op == 'delete':
+            for k in range(i1, i2):
+                corrections[k] = {'is_error': True, 'suggestion': ''}
+
+    result = []
+    word_idx = 0
+    for token in orig_tokens:
+        if token['type'] == 'word':
+            corr = corrections.get(word_idx, {'is_error': False, 'suggestion': None})
+            result.append({
+                'type': 'word',
+                'value': token['value'],
+                'is_error': corr.get('is_error', False),
+                'suggestion': corr.get('suggestion'),
+                'merged': corr.get('merged', False),
+            })
+            word_idx += 1
+        else:
+            result.append({
+                'type': token['type'],
+                'value': token['value'],
+                'is_error': False,
+                'suggestion': None,
+                'merged': False,
+            })
+    return result
 
 
 # ──────────────────────────────────────────────────────────────
@@ -764,6 +950,449 @@ async def correct_stream(job_id: str):
             'X-Accel-Buffering': 'no',
         }
     )
+
+
+# ──────────────────────────────────────────────────────────────
+# Two-Step Pipeline: Stage 1 — Spell Check Only
+# ──────────────────────────────────────────────────────────────
+
+@app.post("/api/stage1/spell-check")
+async def stage1_spell_check(req: SpellCheckRequest):
+    """
+    Stage 1: Spelling correction ONLY.
+    - Uses local dictionary first.
+    - Falls back to GPT-4o-mini with a STRICT spelling-only prompt.
+    - Does NOT add punctuation.
+    - Does NOT change dialect words.
+    """
+    from spell_checker import get_checker
+
+    text = req.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+
+    checker = get_checker()
+    if not checker.client:
+        raise HTTPException(status_code=503, detail="OpenAI API not configured")
+
+    # 1. Dictionary check first
+    dict_result = checker._correct_with_dict(text)
+    if dict_result != text:
+        # Dictionary fixed it — return immediately
+        word_diffs = compute_word_diff(text, dict_result)
+        return {
+            "original": text,
+            "corrected": dict_result,
+            "word_diffs": word_diffs,
+            "source": "dictionary",
+        }
+
+    # 2. AI spelling check (STRICT spelling-only prompt)
+    spell_prompt = """أنت مدقق إملائي عربي محترف. مهمتك تصحيح الإملاء فقط.
+
+ما تصححه (فقط):
+- الهمزات: "اول" → "أول"، "ان" → "أن"
+- الألفات: "الى" → "إلى"
+- التاء المربوطة: "مئه" → "مئة"
+- الحروف المقطوعة والمتصلة
+
+ما لا تصححه مطلقاً:
+- لا تُغيّر علامات الترقيم (نقاط، فواصل، علامات استفهام) — احتفظ بها كما هي بالضبط
+- لا تصحح القواعد النحوية (الإعراب، الرفع، النصب، الجر، التنوين)
+- لا تحوّل كلمات عامية إلى فصحى (احنا، هسه، شلون، عندنا — تبقى كما هي)
+- لا تُضيف أو تحذف كلمات
+
+إذا النص صحيح إملائياً، أرجعه كما هو بالضبط.
+أعد النص فقط بدون أي شرح."""
+
+    try:
+        response = checker.client.chat.completions.create(
+            model=checker.model,
+            messages=[
+                {"role": "system", "content": spell_prompt},
+                {"role": "user", "content": f"صحح الإملاء فقط:\n\n{text}"}
+            ],
+            temperature=0,
+            max_tokens=2000,
+        )
+        corrected = response.choices[0].message.content.strip()
+        checker.stats['api_calls'] += 1
+
+        if corrected != text:
+            checker.cache.set(text, corrected, checker.model)
+
+        word_diffs = compute_word_diff(text, corrected)
+        return {
+            "original": text,
+            "corrected": corrected,
+            "word_diffs": word_diffs,
+            "source": "ai",
+        }
+    except Exception as e:
+        logger.error(f"Stage 1 spell check failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/stage1/spell-check-batch")
+async def stage1_spell_check_batch(req: Stage1BatchRequest):
+    """
+    Batch Stage 1: Spell check multiple segments.
+    """
+    from spell_checker import get_checker
+
+    checker = get_checker()
+    if not checker.client:
+        raise HTTPException(status_code=503, detail="OpenAI API not configured")
+
+    results = []
+    for seg in req.segments:
+        text = seg.text.strip()
+        if not text:
+            results.append({
+                "id": seg.id,
+                "original": text,
+                "corrected": text,
+                "word_diffs": [{'type': 'word', 'value': text, 'is_error': False, 'suggestion': None}],
+                "source": "empty",
+            })
+            continue
+
+        # Dictionary check
+        dict_result = checker._correct_with_dict(text)
+        if dict_result != text:
+            results.append({
+                "id": seg.id,
+                "original": text,
+                "corrected": dict_result,
+                "word_diffs": compute_word_diff(text, dict_result),
+                "source": "dictionary",
+            })
+            continue
+
+        # AI check needed
+        results.append({
+            "id": seg.id,
+            "original": text,
+            "corrected": text,  # Will be filled by AI
+            "word_diffs": [],
+            "source": "pending",
+        })
+
+    # Batch AI check for pending segments
+    pending = [(i, r) for i, r in enumerate(results) if r['source'] == 'pending']
+    if pending and checker.client:
+        texts = [r['original'] for _, r in pending]
+        spell_prompt = """أنت مدقق إملائي عربي محترف. صحح الإملاء فقط.
+ما تصححه: الهمزات (اول→أول، ان→أن)، الألفات (الى→إلى)، التاء المربوطة (مئه→مئة).
+ما لا تصححه مطلقاً: لا تغيّر الترقيم ولا تصحح النحو ولا تحوّل عامية لفصحى (احنا، هسه، شلون تبقى).
+إذا النص صحيح، أرجعه كما هو بالضبط.
+أعد النصوص بالترتيب [1] [2]..."""
+
+        numbered = "\n".join([f"[{i+1}] {t}" for i, t in enumerate(texts)])
+
+        try:
+            response = checker.client.chat.completions.create(
+                model=checker.model,
+                messages=[
+                    {"role": "system", "content": spell_prompt},
+                    {"role": "user", "content": f"صحح الإملاء فقط:\n\n{numbered}"}
+                ],
+                temperature=0,
+                max_tokens=4000,
+            )
+            result_text = response.choices[0].message.content.strip()
+            checker.stats['api_calls'] += 1
+
+            # Parse numbered results
+            pattern = r'\[(\d+)\]\s*(.*?)(?=\[\d+\]|$)'
+            matches = re.findall(pattern, result_text, re.DOTALL)
+            ai_map = {int(num): text.strip() for num, text in matches}
+
+            for j, (idx, _) in enumerate(pending):
+                ai_text = ai_map.get(j + 1, results[idx]['original'])
+                if ai_text != results[idx]['original']:
+                    results[idx]['corrected'] = ai_text
+                    results[idx]['word_diffs'] = compute_word_diff(results[idx]['original'], ai_text)
+                    results[idx]['source'] = 'ai'
+                    checker.cache.set(results[idx]['original'], ai_text, checker.model)
+                else:
+                    results[idx]['word_diffs'] = [{'type': 'word', 'value': results[idx]['original'], 'is_error': False, 'suggestion': None}]
+                    results[idx]['source'] = 'unchanged'
+        except Exception as e:
+            logger.error(f"Stage 1 batch AI failed: {e}")
+            for idx, _ in pending:
+                results[idx]['source'] = 'error'
+
+    return {"results": results}
+
+
+# ──────────────────────────────────────────────────────────────
+# Two-Step Pipeline: Stage 2 — Grammar & Style
+# ──────────────────────────────────────────────────────────────
+
+@app.post("/api/stage2/grammar-style")
+async def stage2_grammar_style(req: Stage2Request):
+    """
+    Stage 2: Grammar & Style processing.
+    
+    Dynamic prompt based on:
+    - add_punctuation: whether to add punctuation
+    - mode: 'preserve' (keep dialect) or 'msa' (convert to formal)
+    """
+    from spell_checker import get_checker
+
+    text = req.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+
+    checker = get_checker()
+    if not checker.client:
+        raise HTTPException(status_code=503, detail="OpenAI API not configured")
+
+    # Build dynamic prompt
+    system_prompt = build_grammar_prompt(req.add_punctuation, req.mode)
+
+    try:
+        response = checker.client.chat.completions.create(
+            model=checker.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"عالج النص التالي:\n\n{text}"}
+            ],
+            temperature=0.1,
+            max_tokens=4000,
+        )
+        corrected = response.choices[0].message.content.strip()
+        checker.stats['api_calls'] += 1
+
+        # Use smart diff for N-to-M support
+        word_diffs = compute_smart_diff(text, corrected)
+
+        return {
+            "original": text,
+            "corrected": corrected,
+            "word_diffs": word_diffs,
+            "mode": req.mode.value,
+            "punctuation_added": req.add_punctuation,
+        }
+    except Exception as e:
+        logger.error(f"Stage 2 grammar check failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/stage2/grammar-style-batch")
+async def stage2_grammar_style_batch(
+    segments: List[SegmentInput],
+    add_punctuation: bool = False,
+    mode: ProcessingMode = ProcessingMode.preserve,
+):
+    """
+    Batch Stage 2: Grammar & Style for multiple segments.
+    """
+    from spell_checker import get_checker
+
+    checker = get_checker()
+    if not checker.client:
+        raise HTTPException(status_code=503, detail="OpenAI API not configured")
+
+    system_prompt = build_grammar_prompt(add_punctuation, mode)
+
+    # Build numbered prompt
+    numbered = "\n".join(
+        [f"[{s.id}] {s.text}" for s in segments if s.text.strip()]
+    )
+    if not numbered:
+        return {"results": []}
+
+    try:
+        response = checker.client.chat.completions.create(
+            model=checker.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"عالج النصوص التالية:\n\n{numbered}"}
+            ],
+            temperature=0.1,
+            max_tokens=4000,
+        )
+        result_text = response.choices[0].message.content.strip()
+        checker.stats['api_calls'] += 1
+
+        # Parse numbered results
+        pattern = r'\[(\d+)\]\s*(.*?)(?=\[\d+\]|$)'
+        matches = re.findall(pattern, result_text, re.DOTALL)
+        results_map = {int(num): text.strip() for num, text in matches}
+
+        results = []
+        for seg in segments:
+            original = seg.text
+            corrected = results_map.get(seg.id, original)
+            results.append({
+                'id': seg.id,
+                'original': original,
+                'corrected': corrected,
+                'word_diffs': compute_smart_diff(original, corrected),
+            })
+
+        return {"results": results}
+    except Exception as e:
+        logger.error(f"Stage 2 batch grammar check failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/grammar-check")
+async def grammar_check(request: Request):
+    """
+    On-demand grammar check for selected text.
+    Uses OpenAI to correct grammatical errors (إعراب، رفع، نصب، جر)
+    while preserving colloquial/dialect words.
+    """
+    body = await request.json()
+    text = body.get('text', '').strip()
+    
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    
+    # Import OpenAI client from spell_checker
+    from spell_checker import get_checker
+    checker = get_checker()
+    
+    if not checker.client:
+        raise HTTPException(status_code=503, detail="OpenAI API not configured")
+    
+    system_prompt = """أنت خبير في النحو العربي. مهمتك هي تصحيح الأخطاء النحوية فقط.
+
+⚠️ أهم قاعدة (افتحها أولاً):
+أي كلمة عامية أو لهجية (عراقية، شامية، خليجية، مصرية...) يُمنع منعاً باتاً تعديلها أو حذفها أو استبدالها. إذا استبدلت كلمة عامية بأي كلمة أخرى، أنت خاطئ.
+
+أمثلة على كلمات عامية يُمنع تعديلها:
+- عندنا = صحيحة (لا تحوّلها إلى "لدينا" أو "أن")
+- هسه = صحيحة (لا تحوّلها إلى "الآن")
+- شنو = صحيحة (لا تحوّلها إلى "ماذا")
+- وين = صحيحة (لا تحوّلها إلى "أين")
+- هاي = صحيحة (لا تحوّلها إلى "هذه")
+- شلون = صحيحة (لا تحوّلها إلى "كيف")
+- اريد = صحيحة (لا تحوّلها إلى "أريد")
+- لوّن = صحيحة (لا تحوّلها إلى "يميل")
+
+ما يُصحَّح (الإعراب فقط):
+- فاعل + مفعول به: "جاء الرجلُ البيتَ" (لم يجئ الرجل)
+- رفع ونصب الضمائر: "رأيتُهُ" (لا "رأيته")
+- الإضافة: "كتابُ الطالبِ" (لا "كتاب الطالب")
+- همزة الوصل والقطع: "ابن" vs "ابْن" (لا تغيّر)
+
+قواعد صارمة:
+1. صحح الإعراب فقط (رفع، نصب، جر، ضمائر)
+2. لا تحوّل أي كلمة عامية إلى فصحى
+3. لا تُضِف أو تحذف كلمات
+4. لا تُغيّر علامات الترقيم
+5. إذا النص صحيح نحوياً، أرجعه كما هو 100%
+6. أعد النص فقط بدون شرح
+"""
+    
+    try:
+        response = checker.client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"صحح الأخطاء النحوية في النص التالي (لا تلمس الكلمات العامية):\n\n{text}"}
+            ],
+            temperature=0,
+            max_tokens=2000,
+        )
+        
+        corrected = response.choices[0].message.content.strip()
+        
+        return {
+            "original_text": text,
+            "corrected_text": corrected,
+        }
+    except Exception as e:
+        logger.error(f"Grammar check failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Grammar check failed: {str(e)}")
+
+
+@app.post("/api/grammar-check-batch")
+async def grammar_check_batch(request: Request):
+    """
+    Batch grammar check for all segments.
+    Body: { "segments": [{ "id": 1, "text": "..." }, ...] }
+    Returns: { "results": [{ "id": 1, "original": "...", "corrected": "..." }, ...] }
+    """
+    from spell_checker import get_checker
+    body = await request.json()
+    segments = body.get('segments', [])
+    
+    if not segments:
+        raise HTTPException(status_code=400, detail="segments is required")
+    
+    checker = get_checker()
+    if not checker.client:
+        raise HTTPException(status_code=503, detail="OpenAI API not configured")
+    
+    system_prompt = """أنت خبير في النحو العربي. مهمتك هي تصحيح الأخطاء النحوية فقط.
+
+⚠️ أهم قاعدة (افتحها أولاً):
+أي كلمة عامية أو لهجية يُمنع منعاً باتاً تعديلها أو استبدالها.
+
+أمثلة على كلمات عامية يُمنع تعديلها:
+- عندنا، هسه، شنو، وين، هاي، شلون، اريد، لوّن
+
+ما يُصحَّح فقط (الإعراب):
+- فاعل + مفعول به: "جاء الرجلُ البيتَ"
+- رفع ونصب الضمائر
+- الإضافة: "كتابُ الطالبِ"
+
+قواعد صارمة:
+1. صحح الإعراب فقط
+2. لا تحوّل كلمة عامية إلى فصحى
+3. لا تُضِف أو تحذف كلمات
+4. لا تُغيّر علامات الترقيم
+5. إذا النص صحيح نحوياً، أرجعه كما هو
+6. أعد النص فقط بدون شرح
+"""
+    
+    # Build numbered prompt
+    numbered = "\n".join([f"[{s['id']}] {s['text']}" for s in segments if s.get('text', '').strip()])
+    
+    if not numbered:
+        return {"results": []}
+    
+    try:
+        response = checker.client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"صحح الأخطاء النحوية في كل نص:\n\n{numbered}"}
+            ],
+            temperature=0,
+            max_tokens=4000,
+        )
+        
+        result_text = response.choices[0].message.content.strip()
+        
+        # Parse numbered results
+        import re as _re
+        results = []
+        pattern = r'\[(\d+)\]\s*(.*?)(?=\[\d+\]|$)'
+        matches = _re.findall(pattern, result_text, _re.DOTALL)
+        
+        results_map = {}
+        for num_str, text in matches:
+            results_map[int(num_str)] = text.strip()
+        
+        for seg in segments:
+            seg_id = seg['id']
+            original = seg.get('text', '')
+            corrected = results_map.get(seg_id, original)
+            results.append({
+                'id': seg_id,
+                'original': original,
+                'corrected': corrected,
+            })
+        
+        return {"results": results}
+    except Exception as e:
+        logger.error(f"Grammar batch check failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Grammar batch check failed: {str(e)}")
 
 
 @app.get("/health")
